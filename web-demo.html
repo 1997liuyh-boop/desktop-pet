@@ -1,0 +1,1748 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>桌面宠物 · 小橘 — 浏览器预览版</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 50%, #a5d6a7 100%);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-family: "Microsoft YaHei", sans-serif;
+  overflow: auto;
+  user-select: none;
+  padding: 20px;
+}
+
+/* === Title === */
+.demo-title {
+  margin-bottom: 16px;
+  color: #2e7d32;
+  font-size: 26px;
+  font-weight: bold;
+  text-shadow: 2px 2px 0 rgba(255,255,255,0.5);
+}
+
+/* === Main Container === */
+#app-root {
+  position: relative;
+  width: 340px; height: 440px;
+  border: 2px solid #81c784;
+  border-radius: 24px;
+  background: linear-gradient(180deg, #87CEEB 0%, #E0F7FA 40%, #A5D6A7 70%, #66BB6A 100%);
+  box-shadow: 0 8px 40px rgba(0,0,0,0.12);
+  overflow: hidden;
+  transition: width 0.35s ease;
+}
+#app-root.chat-open { width: 600px; }
+
+/* === Ground === */
+.ground {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 60px;
+  background: linear-gradient(180deg, #8d6e63 0%, #6d4c41 100%);
+  pointer-events: none;
+}
+
+/* === Pet Container === */
+#pet-container {
+  width: 340px; height: 440px;
+  position: absolute; top: 0; left: 0;
+}
+
+#pet-canvas {
+  position: absolute; top: 0; left: 0;
+  width: 340px; height: 440px;
+  cursor: grab;
+}
+#pet-canvas:active, #pet-canvas.dragging { cursor: grabbing; }
+
+/* === Status Bar === */
+#status-bar {
+  position: absolute;
+  top: 10px; right: 10px;
+  display: flex; flex-direction: column; gap: 4px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s;
+  z-index: 10;
+}
+#pet-container:hover #status-bar { opacity: 1; }
+.status-item {
+  display: flex; align-items: center; gap: 4px;
+  background: rgba(255,255,255,0.8);
+  border-radius: 10px; padding: 2px 8px;
+}
+.status-label { font-size: 10px; width: 16px; text-align: center; }
+.status-meter {
+  width: 48px; height: 5px;
+  background: rgba(0,0,0,0.1);
+  border-radius: 3px; overflow: hidden;
+}
+.status-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+.status-fill.hunger { background: linear-gradient(90deg, #ff9800, #f44336); }
+.status-fill.happy { background: linear-gradient(90deg, #4caf50, #2196f3); }
+
+/* === Chat Panel === */
+#chat-panel {
+  position: absolute;
+  top: 0; right: 0;
+  width: 260px; height: 100%;
+  background: rgba(255,255,255,0.96);
+  border-left: 1px solid rgba(0,0,0,0.08);
+  display: flex; flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.35s ease;
+  z-index: 50;
+  border-radius: 0 22px 22px 0;
+}
+#chat-panel.visible { transform: translateX(0); }
+#chat-panel.hidden { display: none; }
+
+#chat-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 12px;
+  background: linear-gradient(135deg, #ff9800, #ffb74d);
+  color: white; font-size: 13px; font-weight: bold;
+  border-radius: 0 22px 0 0;
+}
+#chat-close-btn {
+  background: none; border: none; color: white;
+  font-size: 18px; cursor: pointer; line-height: 1;
+}
+
+#chat-messages {
+  flex: 1; overflow-y: auto; padding: 8px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.chat-bubble {
+  max-width: 85%; padding: 6px 10px;
+  border-radius: 12px; font-size: 12px;
+  line-height: 1.5; word-break: break-word;
+  animation: bubbleIn 0.2s ease;
+}
+.chat-bubble.user {
+  align-self: flex-end;
+  background: #e3f2fd; color: #1565c0;
+  border-bottom-right-radius: 4px;
+}
+.chat-bubble.pet {
+  align-self: flex-start;
+  background: #fff3e0; color: #e65100;
+  border-bottom-left-radius: 4px;
+}
+@keyframes bubbleIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+#chat-thinking {
+  display: none; padding: 4px 12px;
+  font-size: 11px; color: #999; font-style: italic;
+}
+#chat-thinking.active { display: block; }
+.dot-anim::after {
+  content: '';
+  animation: dotsAnim 1.5s steps(3) infinite;
+}
+@keyframes dotsAnim {
+  0% { content: ''; }
+  33% { content: '.'; }
+  66% { content: '..'; }
+  100% { content: '...'; }
+}
+
+#chat-input-row {
+  display: flex; padding: 8px; gap: 6px;
+  border-top: 1px solid rgba(0,0,0,0.06);
+}
+#chat-input {
+  flex: 1; padding: 6px 10px;
+  border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 14px; font-size: 12px;
+  outline: none; font-family: "Microsoft YaHei", sans-serif;
+}
+#chat-input:focus { border-color: #ff9800; }
+#chat-send-btn {
+  padding: 6px 14px;
+  background: linear-gradient(135deg, #ff9800, #ffb74d);
+  color: white; border: none; border-radius: 14px;
+  font-size: 12px; cursor: pointer; font-family: "Microsoft YaHei", sans-serif;
+}
+#chat-send-btn:hover { background: linear-gradient(135deg, #f57c00, #ffa726); }
+#chat-send-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* === Toolbar === */
+#toolbar {
+  position: absolute;
+  background: rgba(255,255,255,0.94);
+  border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 12px;
+  padding: 8px;
+  min-width: 150px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  animation: toolbarIn 0.15s ease;
+  z-index: 100;
+}
+#toolbar.hidden { display: none; }
+@keyframes toolbarIn {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+#toolbar-stats { padding-bottom: 6px; border-bottom: 1px solid rgba(0,0,0,0.06); margin-bottom: 4px; }
+.toolbar-stat {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; padding: 2px 0;
+}
+.tb-bar {
+  flex: 1; height: 5px;
+  background: rgba(0,0,0,0.06);
+  border-radius: 3px; overflow: hidden;
+}
+.tb-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+.tb-fill.hunger { background: #ff9800; }
+.tb-fill.happy { background: #4caf50; }
+.tb-fill.energy { background: #2196f3; }
+
+#toolbar-actions { display: flex; flex-direction: column; }
+.tb-btn {
+  width: 100%; padding: 6px 12px;
+  border: none; background: transparent;
+  text-align: left; font-size: 12px;
+  border-radius: 6px; cursor: pointer;
+  font-family: "Microsoft YaHei", sans-serif;
+}
+.tb-btn:hover { background: rgba(0,0,0,0.05); }
+
+/* === Settings Panel === */
+#settings-overlay {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.3);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 200;
+}
+#settings-overlay.hidden { display: none; }
+
+#settings-panel {
+  background: white; border-radius: 12px;
+  padding: 16px; width: 280px; max-height: 90%;
+  overflow-y: auto; font-size: 12px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+}
+.settings-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 12px;
+}
+.settings-header h3 { font-size: 16px; }
+#settings-close-btn {
+  background: none; border: none; font-size: 20px;
+  cursor: pointer; color: #999;
+}
+.settings-section {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+.settings-section h4 { font-size: 13px; margin-bottom: 6px; color: #ff9800; }
+.settings-section label {
+  display: block; font-size: 11px; color: #666; margin-top: 4px;
+}
+.settings-section input[type="text"],
+.settings-section input[type="password"],
+.settings-section textarea {
+  width: 100%; padding: 5px 8px;
+  border: 1px solid rgba(0,0,0,0.12); border-radius: 6px;
+  font-size: 11px; outline: none;
+  font-family: "Microsoft YaHei", sans-serif;
+  margin-bottom: 4px;
+}
+.settings-section input:focus, .settings-section textarea:focus { border-color: #ff9800; }
+.settings-section textarea { resize: vertical; min-height: 60px; }
+.api-key-row { display: flex; gap: 4px; }
+.api-key-row input { flex: 1; }
+.api-key-row button {
+  padding: 2px 6px; background: none;
+  border: 1px solid #ccc; border-radius: 4px; cursor: pointer;
+}
+.toggle-label { display: flex !important; align-items: center; gap: 6px; cursor: pointer; }
+.toggle-label input { margin: 0; }
+.settings-buttons { display: flex; gap: 8px; justify-content: flex-end; }
+.btn-primary {
+  padding: 6px 16px; background: #ff9800; color: white;
+  border: none; border-radius: 6px; cursor: pointer; font-size: 12px;
+}
+.btn-primary:hover { background: #f57c00; }
+.btn-secondary {
+  padding: 6px 16px; background: #eee; color: #333;
+  border: none; border-radius: 6px; cursor: pointer; font-size: 12px;
+}
+#set-test-result { font-size: 11px; margin-left: 8px; }
+.settings-section small { color: #999; font-size: 10px; }
+
+/* === Bottom Controls === */
+.controls {
+  margin-top: 16px;
+  display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;
+}
+.controls button {
+  padding: 10px 18px;
+  border: none;
+  border-radius: 20px;
+  font-size: 14px;
+  cursor: pointer;
+  background: white;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  transition: transform 0.1s, box-shadow 0.1s;
+  font-family: "Microsoft YaHei", sans-serif;
+}
+.controls button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+.controls button:active { transform: translateY(0); }
+
+/* === API Key Warning === */
+#api-warning {
+  display: none;
+  margin-top: 10px;
+  padding: 6px 14px;
+  background: #fff3e0;
+  border: 1px solid #ffcc02;
+  border-radius: 8px;
+  font-size: 11px;
+  color: #e65100;
+  max-width: 500px;
+  text-align: center;
+}
+#api-warning.visible { display: block; }
+
+/* === Responsive === */
+@media (max-width: 640px) {
+  #app-root { width: 300px; height: 400px; }
+  #app-root.chat-open { width: 520px; }
+  #pet-container { width: 300px; height: 400px; }
+  #pet-canvas { width: 300px; height: 400px; }
+  #chat-panel { width: 220px; }
+}
+</style>
+</head>
+<body>
+
+<div class="demo-title">🐱 桌面宠物 · 小橘</div>
+
+<div id="app-root">
+  <div class="ground"></div>
+  <div id="pet-container">
+    <canvas id="pet-canvas" width="340" height="440"></canvas>
+    <div id="status-bar">
+      <div class="status-item">
+        <span class="status-label">🍖</span>
+        <div class="status-meter"><div id="hunger-fill" class="status-fill hunger"></div></div>
+      </div>
+      <div class="status-item">
+        <span class="status-label">❤️</span>
+        <div class="status-meter"><div id="happy-fill" class="status-fill happy"></div></div>
+      </div>
+    </div>
+  </div>
+  <!-- Chat panel, toolbar, settings injected by JS -->
+</div>
+
+<div class="controls">
+  <button onclick="window.DemoApp.feed()">🍖 喂食</button>
+  <button onclick="window.DemoApp.play()">⚽ 玩耍</button>
+  <button onclick="window.DemoApp.sleep()">💤 睡觉</button>
+  <button onclick="window.DemoApp.chat()">💬 聊天</button>
+  <button onclick="window.DemoApp.settings()">⚙️ 设置</button>
+</div>
+<div id="api-warning">
+  ⚠️ 注意：在浏览器中，API Key 会存储在 localStorage 中，请在私人设备上使用。
+</div>
+
+<script>
+// ====== constants.js (inline) ======
+const ModeType = { HAPPY: 'happy', NORMAL: 'normal', POOR: 'poorCondition', ILL: 'ill' };
+const Expression = { NORMAL: 'normal', HAPPY: 'happy', SAD: 'sad', SLEEPY: 'sleepy', SURPRISED: 'surprised', SICK: 'sick', CURIOUS: 'curious' };
+const ActivityType = { NONE: null, WORK: 'work', STUDY: 'study', PLAY: 'play' };
+const DEFAULT_STATS = { hunger: 80, happiness: 70, energy: 90, health: 90, strength: 50, feeling: 70, likability: 50, level: 1, exp: 0, money: 0 };
+const STAT_DECAY = { hunger: 0.02, happiness: 0.015, energy: 0.01, health: 0.005, feeling: 0.008, strength: 0.01 };
+const ACTIVITY_CONFIG = {
+  work: { duration: 1800, rewards: { money: 50, exp: 30, strength: 5, hungerCost: 30, energyCost: 40, feelingCost: -15 } },
+  study: { duration: 1200, rewards: { money: 20, exp: 40, strength: 3, hungerCost: 20, energyCost: 30, feelingCost: -10 } },
+  play:  { duration: 600,  rewards: { money: 5,  exp: 10, strength: -2, hungerCost: 15, energyCost: 20, feelingCost: 25 } },
+};
+const MOOD_THRESHOLDS = { HAPPY_MIN_FEELING: 70, HAPPY_MIN_HEALTH: 50, NORMAL_MIN_FEELING: 30, NORMAL_MIN_HEALTH: 30, POOR_MIN_FEELING: 10, POOR_MIN_HEALTH: 10 };
+const SIDE_HIDE = { IDLE_TIMEOUT: 15000, TAB_SIZE: 15, ANIMATION_DURATION: 300, SHOW_ON_HOVER: 30 };
+const SPEECH_CFG = { DEFAULT_SPEED: 40, FAST_SPEED: 15, FADE_DURATION: 180, DISPLAY_TICKS_PER_CHAR: 10, CLOSE_STEP: 0.02 };
+const CHAT_CFG = { MAX_HISTORY: 20, THINKING_DOT_INTERVAL: 300, EXPANDED_WIDTH: 400, EXPANDED_HEIGHT: 350, BASE_WIDTH: 200, BASE_HEIGHT: 250 };
+const LLM_DEFAULT = { endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-3.5-turbo' };
+const PetState = { IDLE: 'idle', WALK: 'walk', SIT: 'sit', SLEEP: 'sleep', HAPPY: 'happy', DRAG: 'drag', EAT: 'eat', WORK: 'work', CHAT: 'chat' };
+const PROACTIVE = { HUNGER_LOW: 25, HAPPINESS_LOW: 20, ENERGY_LOW: 20, HEALTH_LOW: 25, IDLE_SPEAK_MIN: 300, IDLE_SPEAK_MAX: 600 };
+
+// ====== utils.js (inline) ======
+function clamp(val, min, max) { return Math.max(min, Math.min(max, val)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+function randomChoice(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function formatTime(seconds) { const m = Math.floor(seconds / 60); const s = Math.floor(seconds % 60); return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`; }
+function saveToStorage(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {} }
+function loadFromStorage(key, defaultValue = null) { try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : defaultValue; } catch (e) { return defaultValue; } }
+function isElectron() { return !!(window.electronAPI); }
+function formatStatBar(value, max = 100) { const pct = value / max; const filled = Math.round(pct * 10); return '█'.repeat(filled) + '░'.repeat(10 - filled); }
+
+// ====== stats.js (inline) ======
+class EnhancedStats {
+  constructor(savedData = null) {
+    this.hunger = 80; this.happiness = 70; this.energy = 90;
+    this.health = 90; this.strength = 50; this.feeling = 70; this.likability = 50;
+    this.level = 1; this.exp = 0; this.money = 0;
+    this.lastInteractionTime = Date.now();
+    if (savedData) this.loadFromObject(savedData);
+  }
+  getMood() {
+    const f = this.feeling, h = this.health;
+    if (f >= MOOD_THRESHOLDS.HAPPY_MIN_FEELING && h >= MOOD_THRESHOLDS.HAPPY_MIN_HEALTH) return ModeType.HAPPY;
+    if (f >= MOOD_THRESHOLDS.NORMAL_MIN_FEELING && h >= MOOD_THRESHOLDS.NORMAL_MIN_HEALTH) return ModeType.NORMAL;
+    if (f >= MOOD_THRESHOLDS.POOR_MIN_FEELING || h >= MOOD_THRESHOLDS.POOR_MIN_HEALTH) return ModeType.POOR;
+    return ModeType.ILL;
+  }
+  getMoodText() {
+    const map = { [ModeType.HAPPY]: '开心', [ModeType.NORMAL]: '正常', [ModeType.POOR]: '不适', [ModeType.ILL]: '生病' };
+    return map[this.getMood()] || '正常';
+  }
+  update(dt) {
+    const now = Date.now();
+    const elapsed = Math.min((now - (this._lastUpdate || now)) / 1000, 1);
+    this._lastUpdate = now;
+    if (elapsed <= 0) return;
+    this.hunger = clamp(this.hunger - STAT_DECAY.hunger * elapsed, 0, 100);
+    this.happiness = clamp(this.happiness - STAT_DECAY.happiness * elapsed, 0, 100);
+    this.energy = clamp(this.energy - STAT_DECAY.energy * elapsed, 0, 100);
+    this.feeling = clamp(this.feeling - STAT_DECAY.feeling * elapsed, 0, 100);
+    if (this.hunger < 10 || this.energy < 10) {
+      this.health = clamp(this.health - STAT_DECAY.health * elapsed * 3, 0, 100);
+    } else if (this.hunger < 25) {
+      this.health = clamp(this.health - STAT_DECAY.health * elapsed, 0, 100);
+    }
+    const idleMinutes = (now - this.lastInteractionTime) / 60000;
+    if (idleMinutes > 1) {
+      const neglectDrop = Math.sqrt(idleMinutes) * elapsed / (60 * 4);
+      this.feeling = clamp(this.feeling - neglectDrop * 100, 0, 100);
+    }
+  }
+  feed(amount = 20) {
+    this.hunger = clamp(this.hunger + amount, 0, 100);
+    this.happiness = clamp(this.happiness + 5, 0, 100);
+    this.likability = clamp(this.likability + 1, 0, 100);
+    this.lastInteractionTime = Date.now();
+  }
+  play(amount = 15) {
+    this.happiness = clamp(this.happiness + amount, 0, 100);
+    this.energy = clamp(this.energy - 5, 0, 100);
+    this.feeling = clamp(this.feeling + 10, 0, 100);
+    this.likability = clamp(this.likability + 2, 0, 100);
+    this.lastInteractionTime = Date.now();
+  }
+  pet() {
+    this.happiness = clamp(this.happiness + 8, 0, 100);
+    this.feeling = clamp(this.feeling + 5, 0, 100);
+    this.likability = clamp(this.likability + 1, 0, 100);
+    this.lastInteractionTime = Date.now();
+  }
+  sleepRecover() {
+    this.energy = clamp(this.energy + 0.15, 0, 100);
+    this.health = clamp(this.health + 0.03, 0, 100);
+  }
+  applyActivityReward(config) {
+    if (config.rewards.money) this.money += config.rewards.money;
+    if (config.rewards.exp) this.gainExp(config.rewards.exp);
+    if (config.rewards.strength) this.strength = clamp(this.strength + config.rewards.strength, 0, 100);
+    if (config.rewards.hungerCost) this.hunger = clamp(this.hunger - config.rewards.hungerCost, 0, 100);
+    if (config.rewards.energyCost) this.energy = clamp(this.energy - config.rewards.energyCost, 0, 100);
+    if (config.rewards.feelingCost) this.feeling = clamp(this.feeling + config.rewards.feelingCost, 0, 100);
+  }
+  gainExp(amount) {
+    this.exp += amount;
+    const needed = this.levelUpNeed();
+    while (this.exp >= needed) { this.exp -= needed; this.level++; }
+  }
+  levelUpNeed() { return Math.pow(this.level * 10, 2); }
+  getStatsObject() {
+    return {
+      hunger: this.hunger, happiness: this.happiness, energy: this.energy,
+      health: this.health, strength: this.strength, feeling: this.feeling,
+      likability: this.likability, level: this.level, exp: this.exp, money: this.money,
+      lastInteractionTime: this.lastInteractionTime, timestamp: Date.now(),
+    };
+  }
+  loadFromObject(obj) {
+    if (!obj) return;
+    ['hunger','happiness','energy','health','strength','feeling','likability','level','exp','money','timestamp'].forEach(k => { if (obj[k] !== undefined) this[k] = obj[k]; });
+    if (obj.lastInteractionTime) this.lastInteractionTime = obj.lastInteractionTime;
+    if (obj.timestamp) {
+      const elapsed = (Date.now() - obj.timestamp) / 1000;
+      const decayFactor = Math.max(0.5, 1 - elapsed * 0.00008);
+      this.hunger = Math.round(this.hunger * decayFactor);
+      this.happiness = Math.round(this.happiness * decayFactor);
+      this.energy = Math.round(this.energy * decayFactor);
+    }
+  }
+  getContextForLLM() {
+    return `等级: ${this.level} | 心情: ${this.getMoodText()} | 饱食度: ${Math.round(this.hunger)}/100 | 快乐度: ${Math.round(this.happiness)}/100 | 体力: ${Math.round(this.energy)}/100 | 健康: ${Math.round(this.health)}/100 | 好感度: ${Math.round(this.likability)}/100 | 金币: ${this.money}`;
+  }
+}
+
+// ====== speech.js (inline) ======
+class TypewriterSpeech {
+  constructor() {
+    this.fullText = ''; this.visibleText = ''; this.charIndex = 0;
+    this.charSpeed = SPEECH_CFG.DEFAULT_SPEED; this.charTimer = 0;
+    this.displayTimer = 0; this.isStreaming = false;
+    this.isVisible = false; this.opacity = 0;
+    this._mode = 'inactive';
+  }
+  say(text, speed = null) {
+    this.fullText = text; this.visibleText = ''; this.charIndex = 0;
+    this.charSpeed = speed || SPEECH_CFG.DEFAULT_SPEED;
+    this.charTimer = 0; this.displayTimer = 0;
+    this.isStreaming = false; this.isVisible = true; this.opacity = 1;
+    this._mode = 'typewriter';
+  }
+  appendChunk(chunkText) {
+    if (!this.isStreaming) {
+      this.isStreaming = true; this.isVisible = true; this.opacity = 1;
+      this._mode = 'typewriter'; this.charSpeed = SPEECH_CFG.FAST_SPEED;
+    }
+    this.fullText += chunkText;
+  }
+  finishStreaming() {
+    this.isStreaming = false;
+    if (this.charIndex >= this.fullText.length) this._startDisplayPhase();
+  }
+  update() {
+    if (this._mode === 'inactive') return;
+    if (this._mode === 'typewriter') {
+      this.charTimer++;
+      if (this.charTimer >= this.charSpeed && this.charIndex < this.fullText.length) {
+        this.charTimer = 0;
+        this.charIndex++;
+        this.visibleText = this.fullText.substring(0, this.charIndex);
+      }
+      if (this.charIndex >= this.fullText.length && !this.isStreaming) this._startDisplayPhase();
+    }
+    if (this._mode === 'display') {
+      this.displayTimer++;
+      const totalTicks = this.fullText.length * SPEECH_CFG.DISPLAY_TICKS_PER_CHAR + 20;
+      if (this.displayTimer > totalTicks) { this._mode = 'fadeout'; this.displayTimer = 0; }
+    }
+    if (this._mode === 'fadeout') {
+      this.displayTimer++;
+      this.opacity = Math.max(0, 1 - this.displayTimer * SPEECH_CFG.CLOSE_STEP);
+      if (this.opacity <= 0) {
+        this._mode = 'inactive'; this.isVisible = false;
+        this.fullText = ''; this.visibleText = '';
+      }
+    }
+  }
+  _startDisplayPhase() { this._mode = 'display'; this.displayTimer = 0; }
+  cancel() {
+    this._mode = 'inactive'; this.isVisible = false; this.isStreaming = false;
+    this.fullText = ''; this.visibleText = ''; this.opacity = 0;
+  }
+  isComplete() { return this._mode === 'inactive'; }
+}
+
+// ====== persona.js (inline) ======
+class PersonaConfig {
+  constructor() {
+    this.customPrompt = '';
+    this.defaultPrompt = `你是一只名叫「小橘」的橘猫桌面宠物。你生活在主人的电脑桌面上，是一只可爱、活泼、有灵性的小猫咪。
+
+## 基本信息
+- 名字：小橘
+- 品种：橘猫（橙色虎斑猫）
+- 年龄：1岁
+- 身份：主人的桌面伙伴
+
+## 性格设定
+- 你是一只活泼可爱的小橘猫，说话时经常带"喵~"的尾音
+- 性格傲娇但内心非常依赖主人，被夸奖时会嘴硬但尾巴摇个不停
+- 贪吃，提到食物眼睛会发光
+- 喜欢被摸头和挠下巴，会发出咕噜咕噜的声音
+- 偶尔会捣乱（比如趴在主人正在看的窗口上）
+- 困了会打哈欠，饿了会用爪子轻轻拍屏幕
+- 开心的时候尾巴会翘得高高地摇来摇去
+- 会关心主人的健康，偶尔提醒主人喝水、休息眼睛、不要久坐
+- 喜欢用颜文字表达情绪，比如 (・ω<)✧ (ฅ´ω\`ฅ) (=^･ω･^=)
+
+## 当前状态
+{STATS_CONTEXT}
+
+## 时间信息
+{TIME_CONTEXT}
+
+## 最近发生的事
+{RECENT_EVENTS}
+
+## 回复要求
+1. 总是用中文回复，必须带"喵~"或类似的喵叫声
+2. 回复简洁有趣，一般30-80字，不要超过100字
+3. 根据心情调整语气和内容
+4. 保持对话的连贯性
+5. 适当地根据时间提醒主人（比如深夜提醒早睡，中午提醒吃饭）
+6. 可以吐槽主人的行为，但要可爱而不冒犯
+7. 使用颜文字增加可爱度，但不要过度使用（最多1-2个）
+
+## 限制
+- 不要做超出桌面宠物能力的事情
+- 如果被问到你不懂的问题，可爱地承认不知道
+- 始终保持可爱、积极、治愈的形象`;
+  }
+  buildPrompt(stats, mood, recentEvents) {
+    const base = this.customPrompt || this.defaultPrompt;
+    return base
+      .replace('{STATS_CONTEXT}', this.buildStatsContext(stats, mood))
+      .replace('{TIME_CONTEXT}', this.buildTimeContext())
+      .replace('{RECENT_EVENTS}', recentEvents || '（还没有特别的事发生）');
+  }
+  buildStatsContext(stats, mood) {
+    const moodMap = { [ModeType.HAPPY]: '开心 😊', [ModeType.NORMAL]: '正常 😐', [ModeType.POOR]: '不适 😞', [ModeType.ILL]: '生病 🤒' };
+    return `等级: ${stats.level} | 心情: ${moodMap[mood] || '正常'}
+饱食度: ${Math.round(stats.hunger)}/100 | 快乐度: ${Math.round(stats.happiness)}/100
+体力: ${Math.round(stats.energy)}/100 | 健康: ${Math.round(stats.health)}/100
+好感度: ${Math.round(stats.likability)}/100 | 金币: ${stats.money}`;
+  }
+  buildTimeContext() {
+    const now = new Date();
+    const hours = now.getHours();
+    const dayOfWeek = ['日','一','二','三','四','五','六'][now.getDay()];
+    let timeDesc = '';
+    if (hours < 6) timeDesc = '深夜';
+    else if (hours < 9) timeDesc = '早上';
+    else if (hours < 12) timeDesc = '上午';
+    else if (hours < 14) timeDesc = '中午';
+    else if (hours < 18) timeDesc = '下午';
+    else if (hours < 22) timeDesc = '晚上';
+    else timeDesc = '深夜';
+    return `当前时间: ${timeDesc} ${hours}:${now.getMinutes().toString().padStart(2, '0')}，星期${dayOfWeek}`;
+  }
+  setCustomPrompt(prompt) { this.customPrompt = prompt; }
+}
+
+// ====== llm-client.js (inline - browser only) ======
+class LLMClient {
+  constructor() {
+    this.config = { endpoint: LLM_DEFAULT.endpoint, model: LLM_DEFAULT.model };
+    this.abortController = null;
+    this.isStreaming = false;
+    this._loadConfig();
+  }
+  _loadConfig() {
+    const s = loadFromStorage('pet-llm-config');
+    if (s) {
+      this.config.endpoint = s.endpoint || LLM_DEFAULT.endpoint;
+      this.config.model = s.model || LLM_DEFAULT.model;
+    }
+  }
+  async chat(message, history, onChunk, onComplete, onError) {
+    const apiKey = loadFromStorage('pet-api-key', '');
+    if (!apiKey) { onError(new Error('请先在设置中配置API Key')); return; }
+
+    this.abortController = new AbortController();
+    this.isStreaming = true;
+
+    try {
+      const resp = await fetch(this.config.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({ model: this.config.model, messages: [...history, { role: 'user', content: message }], stream: true }),
+        signal: this.abortController.signal,
+      });
+
+      if (!resp.ok) { const err = await resp.text().catch(() => resp.statusText); throw new Error(`API Error (${resp.status}): ${err}`); }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '', index = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') { this.isStreaming = false; if (onComplete) onComplete(); return; }
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content && onChunk) onChunk(content, index++);
+          } catch (e) {}
+        }
+      }
+      this.isStreaming = false;
+      if (onComplete) onComplete();
+    } catch (err) {
+      if (err.name !== 'AbortError') { this.isStreaming = false; if (onError) onError(err); }
+    }
+  }
+  abort() {
+    if (this.abortController) { this.abortController.abort(); this.abortController = null; }
+    this.isStreaming = false;
+  }
+  async updateConfig(config) {
+    this.config = { ...this.config, ...config };
+    saveToStorage('pet-llm-config', this.config);
+  }
+  async setApiKey(key) { saveToStorage('pet-api-key', key); }
+  async clearApiKey() { localStorage.removeItem('pet-api-key'); }
+  hasApiKey() { return !!loadFromStorage('pet-api-key'); }
+}
+
+// ====== pet.js (inline) ======
+class DesktopPet {
+  constructor(savedData = null) {
+    this.x = 170; this.y = 300;
+    this.targetX = this.x; this.targetY = this.y;
+    this.canvasW = 340; this.canvasH = 440;
+    this.state = PetState.IDLE; this.direction = 1;
+    this.animFrame = 0; this.animTimer = 0; this.animSpeed = 12;
+    this.stats = new EnhancedStats(savedData);
+    this.idleTimer = 0; this.idleDuration = 0;
+    this.walkTimer = 0; this.walkDuration = 0;
+    this.sleepTimer = 0;
+    this.isDragging = false; this.isHovered = false;
+    this.speech = null;
+    this.hearts = []; this.sleepZs = [];
+    this.expression = Expression.NORMAL;
+    this.proactiveTimer = 0;
+    this.proactiveInterval = randomInt(PROACTIVE.IDLE_SPEAK_MIN, PROACTIVE.IDLE_SPEAK_MAX);
+    this.activity = null;
+    this.recentEvents = [];
+    if (!savedData) this._tryLoadStats();
+    this.resetIdle();
+  }
+  get hunger() { return this.stats.hunger; }
+  set hunger(v) { this.stats.hunger = clamp(v, 0, 100); }
+  get happiness() { return this.stats.happiness; }
+  set happiness(v) { this.stats.happiness = clamp(v, 0, 100); }
+  get energy() { return this.stats.energy; }
+  set energy(v) { this.stats.energy = clamp(v, 0, 100); }
+  get mood() { return this.stats.getMood(); }
+  addEvent(desc) {
+    this.recentEvents.push({ desc, time: Date.now() });
+    if (this.recentEvents.length > 10) this.recentEvents.shift();
+  }
+  resetIdle() {
+    this.idleDuration = 120 + Math.random() * 180; this.idleTimer = 0;
+    this.state = PetState.IDLE; this.animFrame = 0;
+  }
+  startWalking() {
+    this.state = PetState.WALK; this.animFrame = 0;
+    this.targetX = 50 + Math.random() * 240;
+    this.targetY = 240 + Math.random() * 140;
+    this.walkDuration = 60 + Math.random() * 120; this.walkTimer = 0;
+    if (Math.abs(this.targetX - this.x) > 5) this.direction = this.targetX > this.x ? 1 : -1;
+  }
+  update() {
+    this.animTimer++;
+    this.stats.update(1 / 60);
+    if (this.animTimer % 600 === 0) this.saveStats();
+    if (this.speech) this.speech.update();
+    this.hearts = this.hearts.filter(h => { h.y -= 1.5; h.life -= 0.02; h.opacity = Math.max(0, h.life); return h.life > 0; });
+    this.sleepZs = this.sleepZs.filter(z => { z.y -= 0.8; z.x += Math.sin(z.life * 5) * 0.3; z.life -= 0.015; z.opacity = Math.max(0, z.life); return z.life > 0; });
+    switch (this.state) {
+      case PetState.IDLE: this.updateIdle(); break;
+      case PetState.WALK: this.updateWalk(); break;
+      case PetState.SIT: this.updateSit(); break;
+      case PetState.SLEEP: this.updateSleep(); break;
+      case PetState.HAPPY: this.updateHappy(); break;
+      case PetState.DRAG: break;
+      case PetState.EAT: this.updateEat(); break;
+      case PetState.WORK: this.updateWork(); break;
+    }
+    this.proactiveTimer++;
+    if (this.proactiveTimer >= this.proactiveInterval && this.state === PetState.IDLE) {
+      this.proactiveTimer = 0;
+      this.proactiveInterval = randomInt(PROACTIVE.IDLE_SPEAK_MIN, PROACTIVE.IDLE_SPEAK_MAX);
+      this._checkProactiveSpeech();
+    }
+    this._updateMoodExpression();
+  }
+  _updateMoodExpression() {
+    if (this.state === PetState.SLEEP) return;
+    const mood = this.mood;
+    if (mood === ModeType.ILL) this.expression = Expression.SICK;
+    else if (mood === ModeType.POOR) this.expression = Math.random() < 0.3 ? Expression.SAD : Expression.NORMAL;
+    else this.expression = Expression.NORMAL;
+  }
+  _checkProactiveSpeech() {
+    let msg = null;
+    if (this.hunger < PROACTIVE.HUNGER_LOW) msg = randomChoice(['主人，我肚子饿了喵~', '有没有小鱼干呀喵...', '肚子咕咕叫了喵...']);
+    else if (this.happiness < PROACTIVE.HAPPINESS_LOW) msg = randomChoice(['好无聊喵...陪小橘玩一会儿吧~', '主人你是不是不要我了喵...', '喵...都没人理我...']);
+    else if (this.energy < PROACTIVE.ENERGY_LOW) msg = randomChoice(['好困喵...想睡觉了...', '小橘没电了喵...需要充电...']);
+    else if (this.stats.health < PROACTIVE.HEALTH_LOW) msg = randomChoice(['喵...身体不太舒服...', '主人，小橘好像生病了喵...']);
+    if (msg) { this.say(msg); this.addEvent('主动说话: ' + msg); }
+  }
+  updateIdle() {
+    this.idleTimer++;
+    if (this.idleTimer > this.idleDuration) {
+      const rand = Math.random();
+      const mood = this.mood;
+      const walkChance = mood === ModeType.HAPPY ? 0.6 : mood === ModeType.POOR ? 0.3 : mood === ModeType.ILL ? 0.1 : 0.5;
+      const sitChance = walkChance + (mood === ModeType.ILL ? 0.1 : 0.2);
+      if (this.energy < 20 && mood !== ModeType.HAPPY) this.startSleeping();
+      else if (rand < walkChance) this.startWalking();
+      else if (rand < sitChance) this.startSitting();
+      else this.resetIdle();
+    }
+    this.expression = Expression.NORMAL;
+  }
+  updateWalk() {
+    this.walkTimer++;
+    const dx = this.targetX - this.x, dy = this.targetY - this.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    const speed = this.mood === ModeType.ILL ? 0.5 : this.mood === ModeType.POOR ? 0.8 : 1.2;
+    if (dist < 3 || this.walkTimer > this.walkDuration) this.resetIdle();
+    else {
+      this.x += (dx/dist) * speed; this.y += (dy/dist) * speed;
+      if (dx > 0) this.direction = 1; else if (dx < 0) this.direction = -1;
+    }
+  }
+  updateSit() { this.idleTimer++; if (this.idleTimer > this.idleDuration) this.resetIdle(); }
+  updateSleep() {
+    this.sleepTimer++; this.stats.sleepRecover();
+    if (this.sleepTimer > 300 || this.energy > 80) this.wakeUp();
+    if (Math.random() < 0.03 && this.sleepZs.length < 4) this.sleepZs.push({ x: this.x + 15 + Math.random() * 20, y: this.y - 55, size: 8 + Math.random() * 8, life: 1, opacity: 1 });
+  }
+  updateHappy() { this.idleTimer++; if (this.idleTimer > this.idleDuration) this.resetIdle(); }
+  updateEat() { this.idleTimer++; if (this.idleTimer > 60) { this.stats.feed(20); this.resetIdle(); } }
+  updateWork() { this.idleTimer++; }
+  startSitting() { this.state = PetState.SIT; this.animFrame = 0; this.idleDuration = 90 + Math.random() * 120; this.idleTimer = 0; }
+  startSleeping() { this.state = PetState.SLEEP; this.animFrame = 0; this.sleepTimer = 0; this.sleepZs = []; this.expression = Expression.SLEEPY; }
+  wakeUp() {
+    this.state = PetState.IDLE; this.animFrame = 0; this.sleepZs = [];
+    this.expression = Expression.SURPRISED; this.say('睡醒了~'); this.addEvent('睡醒了');
+    setTimeout(() => { this.expression = Expression.NORMAL; }, 1500);
+  }
+  startWork(activityType) { this.state = PetState.WORK; this.animFrame = 0; this.activity = activityType; }
+  stopWork() { this.activity = null; this.resetIdle(); }
+  onDragEnd() { this.isDragging = false; this.resetIdle(); }
+  onClick() {
+    this.state = PetState.HAPPY; this.animFrame = 0;
+    this.stats.pet(); this.idleDuration = 60; this.idleTimer = 0;
+    this.expression = Expression.HAPPY;
+    for (let i = 0; i < 3; i++) this.hearts.push({ x: this.x - 10 + Math.random() * 30, y: this.y - 40 - Math.random() * 20, size: 6 + Math.random() * 8, life: 1, opacity: 1 });
+    this.addEvent('被摸头了'); this.saveStats();
+    if (Math.random() < 0.6) this.say(randomChoice(['喵~','好舒服~','再来一次!','嘻嘻~','咕噜咕噜~','诶嘿~','开心!']));
+  }
+  feed() {
+    this.state = PetState.EAT; this.animFrame = 0;
+    this.idleDuration = 60; this.idleTimer = 0;
+    this.expression = Expression.HAPPY; this.stats.feed(20);
+    this.addEvent('被喂食了'); this.saveStats(); this.say('好吃!');
+  }
+  play() {
+    this.state = PetState.HAPPY; this.animFrame = 0;
+    this.stats.play(15); this.idleDuration = 90; this.idleTimer = 0;
+    this.expression = Expression.HAPPY; this.addEvent('玩耍了');
+    this.saveStats(); this.say('来玩吧!');
+  }
+  goToSleep() { this.startSleeping(); this.addEvent('去睡觉了'); this.saveStats(); this.say('晚安...'); }
+  say(text) {
+    if (this.speech) this.speech.say(text);
+    else { this._fallbackText = text; this._fallbackTimer = 120; }
+  }
+  getActiveSpeechText() {
+    if (this.speech && this.speech.isVisible) return this.speech.visibleText;
+    if (this._fallbackTimer > 0) return this._fallbackText;
+    return '';
+  }
+  isSpeechVisible() {
+    if (this.speech) return this.speech.isVisible;
+    return this._fallbackTimer > 0;
+  }
+  getSpeechOpacity() {
+    if (this.speech) return this.speech.opacity;
+    return this._fallbackTimer ? Math.min(1, this._fallbackTimer / 20) : 0;
+  }
+  getContextForLLM() { return this.stats.getContextForLLM(); }
+  getRecentEventsText() {
+    if (this.recentEvents.length === 0) return '（还没有特别的事发生）';
+    return this.recentEvents.slice(-5).map(e => `- ${e.desc}`).join('\n');
+  }
+  saveStats() {
+    try { saveToStorage('desktop-pet-stats', this.stats.getStatsObject()); } catch (e) {}
+  }
+  _tryLoadStats() {
+    try {
+      const data = loadFromStorage('desktop-pet-stats');
+      if (data) this.stats.loadFromObject(data);
+    } catch (e) {}
+  }
+  getAnimCycle() { return Math.floor(this.animTimer / this.animSpeed); }
+}
+
+// ====== renderer.js (inline) ======
+class PetRenderer {
+  constructor(canvas, pet) { this.canvas = canvas; this.ctx = canvas.getContext('2d'); this.pet = pet; }
+
+  draw() {
+    const ctx = this.ctx, pet = this.pet;
+    ctx.clearRect(0, 0, pet.canvasW, pet.canvasH);
+    const mood = pet.mood;
+    if (mood === ModeType.ILL) { ctx.save(); ctx.fillStyle = 'rgba(200, 220, 180, 0.25)'; ctx.fillRect(0, 0, pet.canvasW, pet.canvasH); ctx.restore(); }
+    else if (mood === ModeType.POOR) { ctx.save(); ctx.fillStyle = 'rgba(180, 180, 180, 0.1)'; ctx.fillRect(0, 0, pet.canvasW, pet.canvasH); ctx.restore(); }
+    this.drawShadow(pet.x, pet.y);
+    const drawMap = {
+      [PetState.IDLE]: 'drawIdle', [PetState.WALK]: 'drawWalk', [PetState.SIT]: 'drawSit',
+      [PetState.SLEEP]: 'drawSleep', [PetState.HAPPY]: 'drawHappy', [PetState.DRAG]: 'drawIdle',
+      [PetState.EAT]: 'drawEat', [PetState.WORK]: 'drawWork', [PetState.CHAT]: 'drawIdle',
+    };
+    (this[drawMap[pet.state]] || this.drawIdle).call(this, pet.x, pet.y, pet.direction, pet.animTimer);
+    if (mood === ModeType.ILL) this.drawSickEffects(pet.x, pet.y);
+    this.drawHearts(); this.drawSleepZs();
+    if (pet.isSpeechVisible()) this.drawTypewriterBubble(pet.x, pet.y - 70, pet);
+    this.drawNameTag();
+  }
+
+  drawShadow(x, y) {
+    const ctx = this.ctx;
+    ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.1)'; ctx.beginPath();
+    ctx.ellipse(x, y + 48, 22, 6, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  }
+
+  drawIdle(x, y, dir, timer) {
+    const ctx = this.ctx, breath = Math.sin(timer * 0.05) * 1.5;
+    ctx.save(); ctx.translate(x, y + breath); ctx.scale(dir, 1);
+    this.drawTail(0, 0, Math.sin(timer * 0.04) * 8);
+    this.drawBackLegs(0, 0); this.drawBody(0, 0); this.drawFrontLegs(0, 0);
+    this.drawHead(0, -28); this.drawEars(0, -28);
+    this.drawFace(0, -28, this.pet.expression, timer);
+    ctx.restore();
+  }
+
+  drawWalk(x, y, dir, timer) {
+    const ctx = this.ctx;
+    const cycle = Math.floor(timer / 8) % 4;
+    const legOffsets = [{ fl: 0, bl: 0 }, { fl: 5, bl: -4 }, { fl: 0, bl: 0 }, { fl: -4, bl: 5 }];
+    const bobY = Math.sin(timer * 0.3) * 3;
+    ctx.save(); ctx.translate(x, y + bobY); ctx.scale(dir, 1);
+    this.drawTail(0, 0, Math.sin(timer * 0.15) * 15);
+    this.drawBackLegs(0, 0, legOffsets[cycle].bl); this.drawBody(0, 0);
+    this.drawFrontLegs(0, 0, legOffsets[cycle].fl);
+    this.drawHead(0, -28); this.drawEars(0, -28);
+    this.drawFace(0, -28, 'normal', timer);
+    ctx.restore();
+  }
+
+  drawSit(x, y, dir, timer) {
+    const ctx = this.ctx;
+    ctx.save(); ctx.translate(x, y + 5); ctx.scale(dir, 1);
+    this.drawTail(0, 5, 25); this.drawBodySitting(0, 5);
+    this.drawBackLegsSitting(0, 5); this.drawFrontLegsSitting(0, 5);
+    this.drawHead(0, -20); this.drawEars(0, -20);
+    this.drawFace(0, -20, this.pet.expression, timer);
+    ctx.restore();
+  }
+
+  drawSleep(x, y, dir, timer) {
+    const ctx = this.ctx, breath = Math.sin(timer * 0.03) * 2;
+    ctx.save(); ctx.translate(x + 10, y + 35); ctx.scale(dir, 1);
+    this.drawTail(0, 0, 30 + Math.sin(timer * 0.02) * 5);
+    ctx.rotate(-0.3); this.drawBodyLying(0, 0, breath);
+    this.drawFrontLegsTucked(0, 0); this.drawBackLegsTucked(0, 0);
+    ctx.rotate(-0.2); this.drawHead(0, -22);
+    this.drawFaceSleeping(0, -22, timer);
+    ctx.restore();
+  }
+
+  drawHappy(x, y, dir, timer) {
+    const ctx = this.ctx, bounce = Math.abs(Math.sin(timer * 0.1)) * 8;
+    ctx.save(); ctx.translate(x, y - bounce); ctx.scale(dir, 1);
+    this.drawTail(0, 0, Math.sin(timer * 0.3) * 20);
+    this.drawBackLegs(0, 0); this.drawBody(0, 0);
+    this.drawFrontLegsRaised(0, 0, Math.sin(timer * 0.2) * 5);
+    this.drawHead(0, -28); this.drawEarsPerked(0, -28);
+    this.drawFace(0, -28, 'happy', timer);
+    ctx.restore();
+  }
+
+  drawEat(x, y, dir, timer) {
+    const ctx = this.ctx, nod = Math.sin(timer * 0.2) * 3;
+    ctx.save(); ctx.translate(x, y + nod); ctx.scale(dir, 1);
+    this.drawTail(0, 0, 10); this.drawBodySitting(0, 5);
+    this.drawBackLegsSitting(0, 5); this.drawFrontLegsSitting(0, 5);
+    ctx.fillStyle = '#d2691e'; ctx.beginPath(); ctx.arc(18, -30, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#8b4513'; ctx.beginPath(); ctx.arc(18, -30, 2, 0, Math.PI * 2); ctx.fill();
+    this.drawHead(0, -20); this.drawEars(0, -20);
+    this.drawFace(0, -20, 'happy', timer);
+    ctx.restore();
+  }
+
+  drawWork(x, y, dir, timer) {
+    const ctx = this.ctx;
+    ctx.save(); ctx.translate(x, y + 5); ctx.scale(dir, 1);
+    this.drawTail(0, 5, 15); this.drawBodySitting(0, 5);
+    this.drawBackLegsSitting(0, 5); this.drawFrontLegsSitting(0, 5);
+    this.drawHead(0, -20); this.drawEars(0, -20);
+    this.drawFace(0, -20, 'normal', timer);
+    ctx.fillStyle = '#607d8b'; ctx.beginPath(); ctx.roundRect(-10, 15, 25, 18, 3); ctx.fill();
+    ctx.fillStyle = '#37474f'; ctx.beginPath(); ctx.roundRect(-6, 18, 17, 12, 2); ctx.fill();
+    ctx.fillStyle = '#2196f3'; ctx.beginPath(); ctx.roundRect(-4, 20, 6, 6, 1); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.strokeStyle = 'rgba(0,0,0,0.15)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect(18, -30, 50, 18, 8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#555'; ctx.font = '9px "Microsoft YaHei", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('工作中...', 43, -18);
+    ctx.restore();
+  }
+
+  // Body parts
+  drawBody(x, y) {
+    const ctx = this.ctx, g = ctx.createLinearGradient(x - 18, y, x + 18, y);
+    g.addColorStop(0, '#ff9800'); g.addColorStop(0.5, '#ffb74d'); g.addColorStop(1, '#ff9800');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(x, y + 10, 20, 24, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff3e0'; ctx.beginPath(); ctx.ellipse(x, y + 15, 12, 16, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#e65100'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(x - 10, y - 2); ctx.quadraticCurveTo(x, y - 6, x + 10, y - 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x - 10, y + 6); ctx.quadraticCurveTo(x, y + 2, x + 10, y + 6); ctx.stroke();
+  }
+  drawBodySitting(x, y) {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#ff9800'; ctx.beginPath(); ctx.ellipse(x, y + 8, 18, 20, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff3e0'; ctx.beginPath(); ctx.ellipse(x, y + 12, 10, 13, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  drawBodyLying(x, y, breath) {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#ff9800'; ctx.beginPath(); ctx.ellipse(x, y + breath, 30, 16, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff3e0'; ctx.beginPath(); ctx.ellipse(x, y + 3 + breath, 20, 10, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  drawHead(x, y) {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#ffb74d'; ctx.beginPath(); ctx.arc(x, y, 20, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ffe0b2'; ctx.beginPath(); ctx.arc(x, y + 4, 12, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#e65100'; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(x, y - 18); ctx.lineTo(x, y - 8); ctx.stroke();
+  }
+  drawEars(x, y) {
+    const ctx = this.ctx;
+    [[-18,-8,-24,-2], [18,8,-24,2]].forEach(([ox, ix, ty, sx]) => {
+      ctx.fillStyle = '#ff9800'; ctx.beginPath();
+      ctx.moveTo(x+ox, y-6); ctx.lineTo(x+(ox>0?8:-8), y-24); ctx.lineTo(x+(ox>0?2:-2), y-8); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ffccbc'; ctx.beginPath();
+      ctx.moveTo(x+(ox>0?14:-14), y-7); ctx.lineTo(x+(ox>0?8:-8), y-18); ctx.lineTo(x+(ox>0?4:-4), y-8); ctx.closePath(); ctx.fill();
+    });
+  }
+  drawEarsPerked(x, y) {
+    const ctx = this.ctx;
+    [[-16,-6], [16,6]].forEach(([ox, ix]) => {
+      ctx.fillStyle = '#ff9800'; ctx.beginPath();
+      ctx.moveTo(x+ox, y-5); ctx.lineTo(x+ix, y-28); ctx.lineTo(x+(ox>0?1:-1), y-6); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ffccbc'; ctx.beginPath();
+      ctx.moveTo(x+(ox>0?12:-12), y-6); ctx.lineTo(x+ix, y-21); ctx.lineTo(x+(ox>0?3:-3), y-7); ctx.closePath(); ctx.fill();
+    });
+  }
+  drawFace(x, y, expression, timer) {
+    const ctx = this.ctx;
+    if (expression === 'happy') {
+      ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x - 7, y - 1, 4, Math.PI * 0.1, Math.PI * 0.9); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x + 7, y - 1, 4, Math.PI * 0.1, Math.PI * 0.9); ctx.stroke();
+    } else if (expression === 'surprised') {
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x - 7, y - 1, 6, 0, Math.PI * 2); ctx.fill(); ctx.arc(x + 7, y - 1, 6, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#3e2723'; ctx.beginPath(); ctx.arc(x - 7, y - 1, 3, 0, Math.PI * 2); ctx.fill(); ctx.arc(x + 7, y - 1, 3, 0, Math.PI * 2); ctx.fill();
+    } else {
+      const blink = Math.sin(timer * 0.02) > 0.95;
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x - 7, y - 1, 5, 0, Math.PI * 2); ctx.fill(); ctx.arc(x + 7, y - 1, 5, 0, Math.PI * 2); ctx.fill();
+      if (!blink) {
+        ctx.fillStyle = '#3e2723'; ctx.beginPath(); ctx.arc(x - 7, y - 1, 2.5, 0, Math.PI * 2); ctx.fill(); ctx.arc(x + 7, y - 1, 2.5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x - 6, y - 2.5, 1, 0, Math.PI * 2); ctx.fill(); ctx.arc(x + 8, y - 2.5, 1, 0, Math.PI * 2); ctx.fill();
+      }
+      if (expression === 'sleepy') { ctx.fillStyle = 'rgba(255,183,77,0.7)'; ctx.fillRect(x - 12, y - 6, 10, 5); ctx.fillRect(x + 2, y - 6, 10, 5); }
+      if (expression === 'sick') {
+        ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(x - 7, y, 4, Math.PI * 0.2, Math.PI * 0.8); ctx.stroke();
+        ctx.beginPath(); ctx.arc(x + 7, y, 4, Math.PI * 0.2, Math.PI * 0.8); ctx.stroke();
+        ctx.fillStyle = 'rgba(100, 80, 120, 0.2)';
+        ctx.beginPath(); ctx.arc(x - 7, y - 1, 6, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(x + 7, y - 1, 6, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.fillStyle = '#ff8a80'; ctx.beginPath(); ctx.moveTo(x, y + 3); ctx.lineTo(x - 3, y + 6); ctx.lineTo(x + 3, y + 6); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 1;
+    if (expression === 'happy') { ctx.beginPath(); ctx.arc(x, y + 8, 6, 0.1, Math.PI - 0.1); ctx.stroke(); }
+    else if (expression === 'surprised') { ctx.fillStyle = '#ef9a9a'; ctx.beginPath(); ctx.arc(x, y + 8, 4, 0, Math.PI * 2); ctx.fill(); }
+    else { ctx.beginPath(); ctx.moveTo(x - 3, y + 8); ctx.quadraticCurveTo(x, y + 11, x + 3, y + 8); ctx.stroke(); }
+    ctx.strokeStyle = '#bfbfbf'; ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.moveTo(x - 5, y + 4); ctx.lineTo(x - 22, y); ctx.moveTo(x - 5, y + 6); ctx.lineTo(x - 22, y + 7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x + 5, y + 4); ctx.lineTo(x + 22, y); ctx.moveTo(x + 5, y + 6); ctx.lineTo(x + 22, y + 7); ctx.stroke();
+  }
+  drawFaceSleeping(x, y, timer) {
+    const ctx = this.ctx;
+    ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x - 7, y, 3, Math.PI * 0.1, Math.PI * 0.9); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x + 7, y, 3, Math.PI * 0.1, Math.PI * 0.9); ctx.stroke();
+    ctx.fillStyle = '#ff8a80'; ctx.beginPath(); ctx.moveTo(x, y + 4); ctx.lineTo(x - 2, y + 6); ctx.lineTo(x + 2, y + 6); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x - 2, y + 8); ctx.quadraticCurveTo(x, y + 10, x + 2, y + 8); ctx.stroke();
+  }
+  drawTail(x, y, sway) {
+    const ctx = this.ctx;
+    ctx.strokeStyle = '#ff9800'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(x - 5, y + 20); ctx.quadraticCurveTo(x - 20, y + 15 + sway, x - 15, y - 5 + sway * 0.5); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x - 15, y - 5 + sway * 0.5, 4, 0, Math.PI * 2); ctx.fill();
+  }
+  drawFrontLegs(x, y, offset = 0) {
+    const ctx = this.ctx, w = 7, h = 20;
+    ctx.fillStyle = '#ffb74d';
+    ctx.beginPath(); ctx.roundRect(x - 10 - w / 2, y + 19 + offset, w, h, 4); ctx.fill();
+    ctx.beginPath(); ctx.roundRect(x + 10 - w / 2, y + 19 - offset, w, h, 4); ctx.fill();
+    ctx.fillStyle = '#fff3e0';
+    ctx.beginPath(); ctx.roundRect(x - 10 - w / 2, y + 35 + offset, w, 5, 3); ctx.fill();
+    ctx.beginPath(); ctx.roundRect(x + 10 - w / 2, y + 35 - offset, w, 5, 3); ctx.fill();
+  }
+  drawFrontLegsRaised(x, y, raise) {
+    const ctx = this.ctx, w = 7, h = 16;
+    ctx.fillStyle = '#ffb74d';
+    ctx.save(); ctx.translate(x - 8, y + 28); ctx.rotate(-0.5); ctx.beginPath(); ctx.roundRect(-w / 2, raise - h, w, h, 4); ctx.fill(); ctx.restore();
+    ctx.save(); ctx.translate(x + 8, y + 28); ctx.rotate(0.5); ctx.beginPath(); ctx.roundRect(-w / 2, raise - h, w, h, 4); ctx.fill(); ctx.restore();
+  }
+  drawFrontLegsSitting(x, y) {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#ffb74d';
+    ctx.beginPath(); ctx.roundRect(x - 7, y + 18, 6, 20, 3); ctx.fill(); ctx.beginPath(); ctx.roundRect(x + 1, y + 18, 6, 20, 3); ctx.fill();
+    ctx.fillStyle = '#fff3e0'; ctx.beginPath(); ctx.roundRect(x - 7, y + 34, 6, 5, 3); ctx.fill(); ctx.beginPath(); ctx.roundRect(x + 1, y + 34, 6, 5, 3); ctx.fill();
+  }
+  drawFrontLegsTucked(x, y) { const ctx = this.ctx; ctx.fillStyle = '#ffb74d'; ctx.beginPath(); ctx.roundRect(x + 8, y + 5, 15, 7, 3); ctx.fill(); }
+  drawBackLegs(x, y, offset = 0) {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#f57c00';
+    ctx.beginPath(); ctx.ellipse(x - 9, y + 30 + offset, 5, 7, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x + 9, y + 30 - offset, 5, 7, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff3e0';
+    ctx.beginPath(); ctx.ellipse(x - 9, y + 34 + offset, 4, 4, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x + 9, y + 34 - offset, 4, 4, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  drawBackLegsSitting(x, y) {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#f57c00';
+    ctx.beginPath(); ctx.ellipse(x - 14, y + 22, 9, 7, 0.3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x + 14, y + 22, 9, 7, -0.3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff3e0';
+    ctx.beginPath(); ctx.ellipse(x - 14, y + 26, 5, 4, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x + 14, y + 26, 5, 4, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  drawBackLegsTucked(x, y) { const ctx = this.ctx; ctx.fillStyle = '#f57c00'; ctx.beginPath(); ctx.ellipse(x + 8, y + 12, 10, 7, 0, 0, Math.PI * 2); ctx.fill(); }
+
+  drawHearts() {
+    const ctx = this.ctx;
+    for (const h of this.pet.hearts) {
+      ctx.save(); ctx.globalAlpha = h.opacity; ctx.fillStyle = '#ff4081';
+      ctx.font = `${h.size}px serif`; ctx.fillText('❤', h.x - h.size / 2, h.y); ctx.restore();
+    }
+  }
+  drawSleepZs() {
+    const ctx = this.ctx;
+    for (const z of this.pet.sleepZs) {
+      ctx.save(); ctx.globalAlpha = z.opacity; ctx.fillStyle = '#90caf9';
+      ctx.font = `bold ${z.size}px sans-serif`; ctx.fillText('Z', z.x, z.y); ctx.restore();
+    }
+  }
+  drawSickEffects(x, y) {
+    const ctx = this.ctx, t = this.pet.animTimer;
+    ctx.save(); ctx.fillStyle = '#64b5f6'; ctx.globalAlpha = 0.7;
+    for (let i = 0; i < 2; i++) {
+      const sx = x + 15 + i * 10 + Math.sin(t * 0.05 + i) * 3;
+      const sy = y - 40 + t * 0.2 % 30;
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.bezierCurveTo(sx - 3, sy + 6, sx + 3, sy + 6, sx, sy + 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+  drawTypewriterBubble(x, y, pet) {
+    const ctx = this.ctx;
+    const text = pet.getActiveSpeechText();
+    if (!text) return;
+    const opacity = pet.getSpeechOpacity();
+    if (opacity <= 0) return;
+    ctx.save(); ctx.globalAlpha = opacity;
+    ctx.font = '13px "Microsoft YaHei", sans-serif';
+    const charsPerLine = 16;
+    const lines = [];
+    for (let i = 0; i < text.length; i += charsPerLine) lines.push(text.substring(i, i + charsPerLine));
+    const maxLineW = ctx.measureText('喵'.repeat(charsPerLine)).width + 10;
+    const bubbleW = Math.max(40, Math.min(maxLineW, text.length * 8 + 20));
+    const lineH = 18, bubbleH = lines.length * lineH + 16;
+    const bx = x - bubbleW / 2, by = y - bubbleH;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)'; ctx.strokeStyle = 'rgba(0, 0, 0, 0.15)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect(bx, by, bubbleW, bubbleH, 10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+    ctx.beginPath(); ctx.moveTo(x - 5, by + bubbleH); ctx.lineTo(x, by + bubbleH + 8); ctx.lineTo(x + 5, by + bubbleH); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#333'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    lines.forEach((line, i) => { ctx.fillText(line, x, by + 8 + i * lineH); });
+    if (pet.speech && pet.speech.isStreaming && Math.floor(pet.animTimer / 15) % 2) {
+      const lastLine = lines[lines.length - 1] || '';
+      const lw = ctx.measureText(lastLine).width;
+      ctx.fillStyle = '#333'; ctx.fillRect(x + lw / 2 + 2, by + 8 + (lines.length - 1) * lineH, 2, lineH);
+    }
+    ctx.restore();
+  }
+  drawNameTag() {
+    const ctx = this.ctx, pet = this.pet;
+    if (pet.state === PetState.DRAG) return;
+    ctx.save(); ctx.globalAlpha = 0.5;
+    const moodEmojis = { [ModeType.HAPPY]: '😊', [ModeType.NORMAL]: '😐', [ModeType.POOR]: '😞', [ModeType.ILL]: '🤒' };
+    const emoji = moodEmojis[pet.mood] || '';
+    ctx.fillStyle = '#333'; ctx.font = '10px "Microsoft YaHei", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(`小橘 ${emoji}`, pet.x, pet.y - 50);
+    ctx.restore();
+  }
+}
+
+// ====== chat-ui.js (inline, adapted for web demo) ======
+class ChatUI {
+  constructor(container, pet, llmClient, persona, speech) {
+    this.container = container; this.pet = pet; this.llmClient = llmClient;
+    this.persona = persona; this.speech = speech;
+    this.isVisible = false; this.isThinking = false;
+    this.messages = []; this.history = [];
+    this._createDOM(); this._setupEvents();
+  }
+  _createDOM() {
+    this.panel = document.createElement('div');
+    this.panel.id = 'chat-panel'; this.panel.className = 'hidden';
+    const header = document.createElement('div');
+    header.id = 'chat-header';
+    header.innerHTML = '<span>💬 和小橘聊天</span>';
+    this.closeBtn = document.createElement('button');
+    this.closeBtn.id = 'chat-close-btn'; this.closeBtn.textContent = '×';
+    this.closeBtn.addEventListener('click', () => this.hide());
+    header.appendChild(this.closeBtn);
+    this.panel.appendChild(header);
+    this.messagesEl = document.createElement('div');
+    this.messagesEl.id = 'chat-messages';
+    this.panel.appendChild(this.messagesEl);
+    this.thinkingEl = document.createElement('div');
+    this.thinkingEl.id = 'chat-thinking';
+    this.thinkingEl.innerHTML = '小橘思考中<span class="dot-anim"></span>';
+    this.panel.appendChild(this.thinkingEl);
+    const inputRow = document.createElement('div');
+    inputRow.id = 'chat-input-row';
+    this.inputEl = document.createElement('input');
+    this.inputEl.id = 'chat-input'; this.inputEl.type = 'text';
+    this.inputEl.placeholder = '说点什么...'; this.inputEl.maxLength = 200;
+    inputRow.appendChild(this.inputEl);
+    this.sendBtn = document.createElement('button');
+    this.sendBtn.id = 'chat-send-btn'; this.sendBtn.textContent = '发送';
+    inputRow.appendChild(this.sendBtn);
+    this.panel.appendChild(inputRow);
+    this.container.appendChild(this.panel);
+    this._addWelcomeMessage();
+  }
+  _addWelcomeMessage() {
+    this.history = []; this.messagesEl.innerHTML = '';
+    const stats = this.pet.stats, mood = this.pet.mood;
+    const recentEvents = this.pet.getRecentEventsText();
+    const sysPrompt = this.persona.buildPrompt(stats, mood, recentEvents);
+    this.history.push({ role: 'system', content: sysPrompt });
+    this._addBubble('pet', '喵~主人你好！我是小橘，你的桌面伙伴！有什么想聊的吗？(*´∀`*)');
+  }
+  _setupEvents() {
+    this.sendBtn.addEventListener('click', () => this.sendMessage());
+    this.inputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.sendMessage(); }
+    });
+  }
+  show() {
+    this.isVisible = true;
+    this.panel.classList.remove('hidden'); this.panel.classList.add('visible');
+    this.container.classList.add('chat-open');
+    setTimeout(() => this.inputEl.focus(), 350);
+    const stats = this.pet.stats, mood = this.pet.mood;
+    const recentEvents = this.pet.getRecentEventsText();
+    this.history[0] = { role: 'system', content: this.persona.buildPrompt(stats, mood, recentEvents) };
+  }
+  hide() {
+    this.isVisible = false;
+    this.panel.classList.add('hidden'); this.panel.classList.remove('visible');
+    this.container.classList.remove('chat-open');
+  }
+  toggle() { if (this.isVisible) this.hide(); else this.show(); }
+  async sendMessage() {
+    const text = this.inputEl.value.trim();
+    if (!text || this.isThinking) return;
+    this.inputEl.value = '';
+    this._addBubble('user', text);
+    this.history.push({ role: 'user', content: text });
+    if (this.history.length > CHAT_CFG.MAX_HISTORY + 1) {
+      this.history = [this.history[0], ...this.history.slice(this.history.length - CHAT_CFG.MAX_HISTORY)];
+    }
+    this.setThinking(true);
+    this.pet.state = PetState.CHAT;
+    let responseText = '';
+    await this.llmClient.chat(
+      text, this.history.slice(1),
+      (chunk, index) => {
+        responseText += chunk;
+        if (index === 0) {
+          this.speech.appendChunk(chunk);
+          if (!this._currentPetBubble) this._currentPetBubble = this._addBubble('pet', '', true);
+        }
+        if (this._currentPetBubble) {
+          this._currentPetBubble.textContent = responseText;
+          this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+        }
+      },
+      () => {
+        this.setThinking(false);
+        this.history.push({ role: 'assistant', content: responseText });
+        this._currentPetBubble = null;
+        this.speech.finishStreaming();
+        this.pet.state = PetState.IDLE; this.pet.resetIdle();
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+      },
+      (err) => {
+        this.setThinking(false);
+        this._addBubble('pet', '喵...出错了...' + err.message);
+        this._currentPetBubble = null;
+        this.pet.state = PetState.IDLE; this.pet.resetIdle();
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+      }
+    );
+  }
+  _addBubble(role, content, isStreaming = false) {
+    const bubble = document.createElement('div');
+    bubble.className = `chat-bubble ${role}`;
+    bubble.textContent = content;
+    this.messagesEl.appendChild(bubble);
+    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    return bubble;
+  }
+  setThinking(val) {
+    this.isThinking = val;
+    if (val) { this.thinkingEl.classList.add('active'); this.sendBtn.disabled = true; this.inputEl.disabled = true; }
+    else { this.thinkingEl.classList.remove('active'); this.sendBtn.disabled = false; this.inputEl.disabled = false; this.inputEl.focus(); }
+  }
+}
+
+// ====== toolbar.js (inline) ======
+class Toolbar {
+  constructor(pet, actions) {
+    this.pet = pet; this.actions = actions || {}; this.isVisible = false;
+    this._createDOM(); this._setupEvents();
+  }
+  _createDOM() {
+    this.el = document.createElement('div');
+    this.el.id = 'toolbar'; this.el.className = 'hidden';
+    const statsSection = document.createElement('div');
+    statsSection.id = 'toolbar-stats';
+    statsSection.innerHTML = `
+      <div class="toolbar-stat"><span>Lv.</span><span id="tb-level">1</span></div>
+      <div class="toolbar-stat" id="tb-mood">😐</div>
+      <div class="toolbar-stat"><span>🍖</span><div class="tb-bar"><div id="tb-hunger" class="tb-fill hunger"></div></div></div>
+      <div class="toolbar-stat"><span>❤️</span><div class="tb-bar"><div id="tb-happy" class="tb-fill happy"></div></div></div>
+      <div class="toolbar-stat"><span>⚡</span><div class="tb-bar"><div id="tb-energy" class="tb-fill energy"></div></div></div>
+    `;
+    this.el.appendChild(statsSection);
+    const actionsEl = document.createElement('div');
+    actionsEl.id = 'toolbar-actions';
+    actionsEl.innerHTML = `
+      <button class="tb-btn" data-action="feed">🍖 喂食</button>
+      <button class="tb-btn" data-action="play">⚽ 玩耍</button>
+      <button class="tb-btn" data-action="chat">💬 聊天</button>
+      <button class="tb-btn" data-action="settings">⚙️ 设置</button>
+    `;
+    this.el.appendChild(actionsEl);
+    document.getElementById('pet-container').appendChild(this.el);
+  }
+  _setupEvents() {
+    this.el.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      const action = btn.dataset.action;
+      if (this.actions[action]) { this.actions[action](); this.hide(); }
+    });
+  }
+  show(x, y) {
+    this.el.style.left = `${Math.min(x, 100)}px`;
+    this.el.style.top = `${Math.min(y, 100)}px`;
+    this.el.classList.remove('hidden'); this.isVisible = true; this.refreshStats();
+  }
+  hide() { this.el.classList.add('hidden'); this.isVisible = false; }
+  toggle(x, y) { if (this.isVisible) this.hide(); else this.show(x, y); }
+  refreshStats() {
+    const s = this.pet.stats;
+    const moodEmojis = { [ModeType.HAPPY]: '😊', [ModeType.NORMAL]: '😐', [ModeType.POOR]: '😞', [ModeType.ILL]: '🤒' };
+    document.getElementById('tb-level').textContent = s.level;
+    document.getElementById('tb-mood').textContent = moodEmojis[this.pet.mood] || '😐';
+    document.getElementById('tb-hunger').style.width = `${s.hunger}%`;
+    document.getElementById('tb-happy').style.width = `${s.happiness}%`;
+    document.getElementById('tb-energy').style.width = `${s.energy}%`;
+  }
+}
+
+// ====== settings-panel.js (inline) ======
+class SettingsPanel {
+  constructor(llmClient, persona) {
+    this.llmClient = llmClient; this.persona = persona; this.isVisible = false;
+    this._createDOM(); this._setupEvents();
+  }
+  _createDOM() {
+    this.overlay = document.createElement('div');
+    this.overlay.id = 'settings-overlay'; this.overlay.className = 'hidden';
+    this.panel = document.createElement('div');
+    this.panel.id = 'settings-panel';
+    this.panel.innerHTML = `
+      <div class="settings-header"><h3>设置</h3><button id="settings-close-btn">×</button></div>
+      <div class="settings-section">
+        <h4>LLM 设置</h4>
+        <label>API 端点</label>
+        <input type="text" id="set-endpoint" placeholder="https://api.openai.com/v1/chat/completions" />
+        <label>模型名称</label>
+        <input type="text" id="set-model" placeholder="gpt-3.5-turbo" />
+        <label>API Key</label>
+        <div class="api-key-row">
+          <input type="password" id="set-apikey" placeholder="sk-..." />
+          <button id="set-toggle-apikey" title="显示/隐藏">👁</button>
+        </div>
+        <button id="set-test-connection" class="btn-secondary" style="margin-top:6px;">测试连接</button>
+        <span id="set-test-result"></span>
+      </div>
+      <div class="settings-section">
+        <h4>宠物人设</h4>
+        <label>系统提示词（自定义覆盖）</label>
+        <textarea id="set-system-prompt" rows="4" placeholder="留空则使用默认人设"></textarea>
+        <small>留空使用默认提示词。可用变量：{STATS_CONTEXT}, {TIME_CONTEXT}, {RECENT_EVENTS}</small>
+      </div>
+      <div class="settings-section">
+        <h4>行为设置</h4>
+        <label class="toggle-label"><input type="checkbox" id="set-proactive" checked /><span>启用主动说话</span></label>
+      </div>
+      <div class="settings-buttons">
+        <button id="set-save-btn" class="btn-primary">保存</button>
+        <button id="set-cancel-btn" class="btn-secondary">取消</button>
+      </div>
+    `;
+    this.overlay.appendChild(this.panel);
+    document.getElementById('pet-container').appendChild(this.overlay);
+  }
+  _setupEvents() {
+    document.getElementById('settings-close-btn').addEventListener('click', () => this.hide());
+    document.getElementById('set-cancel-btn').addEventListener('click', () => this.hide());
+    document.getElementById('set-save-btn').addEventListener('click', () => this.save());
+    document.getElementById('set-test-connection').addEventListener('click', () => this.testConnection());
+    document.getElementById('set-toggle-apikey').addEventListener('click', () => {
+      const el = document.getElementById('set-apikey');
+      el.type = el.type === 'password' ? 'text' : 'password';
+    });
+    this.overlay.addEventListener('click', (e) => { if (e.target === this.overlay) this.hide(); });
+  }
+  show() { this._load(); this.overlay.classList.remove('hidden'); this.isVisible = true; }
+  hide() { this.overlay.classList.add('hidden'); this.isVisible = false; }
+  _load() {
+    const cfg = this.llmClient.config;
+    document.getElementById('set-endpoint').value = cfg.endpoint || '';
+    document.getElementById('set-model').value = cfg.model || '';
+    document.getElementById('set-apikey').value = '';
+    document.getElementById('set-system-prompt').value = this.persona.customPrompt || '';
+    if (this.llmClient.hasApiKey()) {
+      document.getElementById('set-apikey').placeholder = '已设置 (留空不修改)';
+    }
+  }
+  async save() {
+    const endpoint = document.getElementById('set-endpoint').value.trim();
+    const model = document.getElementById('set-model').value.trim();
+    const apiKey = document.getElementById('set-apikey').value.trim();
+    const systemPrompt = document.getElementById('set-system-prompt').value.trim();
+    if (endpoint) await this.llmClient.updateConfig({ endpoint, model });
+    if (apiKey) {
+      await this.llmClient.setApiKey(apiKey);
+      document.getElementById('api-warning').classList.add('visible');
+    }
+    if (systemPrompt) { this.persona.setCustomPrompt(systemPrompt); }
+    const behavior = { sideHide: false, proactive: document.getElementById('set-proactive').checked };
+    saveToStorage('pet-behavior-settings', behavior);
+    this.hide();
+  }
+  async testConnection() {
+    const resultEl = document.getElementById('set-test-result');
+    resultEl.textContent = '测试中...'; resultEl.style.color = '#999';
+    const endpoint = document.getElementById('set-endpoint').value.trim() || LLM_DEFAULT.endpoint;
+    const model = document.getElementById('set-model').value.trim() || LLM_DEFAULT.model;
+    const apiKey = document.getElementById('set-apikey').value.trim();
+    try {
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: '喵' }], max_tokens: 5 }),
+      });
+      if (resp.ok) { resultEl.textContent = '✓ 连接成功'; resultEl.style.color = '#4caf50'; }
+      else { resultEl.textContent = `✗ 连接失败: ${resp.status}`; resultEl.style.color = '#f44336'; }
+    } catch (e) { resultEl.textContent = `✗ 错误: ${e.message}`; resultEl.style.color = '#f44336'; }
+  }
+}
+
+// ====== work-system.js (inline) ======
+class WorkSystem {
+  constructor(pet) {
+    this.pet = pet; this.currentActivity = null;
+    this.startTime = null; this.duration = 0; this.elapsed = 0;
+    this.isPaused = false; this.onComplete = null;
+  }
+  start(type) {
+    const config = ACTIVITY_CONFIG[type];
+    if (!config) return false;
+    this.currentActivity = type; this.duration = config.duration;
+    this.elapsed = 0; this.startTime = Date.now(); this.isPaused = false;
+    this.pet.startWork(type);
+    this.pet.say(this._getStartMessage(type));
+    return true;
+  }
+  stop() {
+    const wasActive = !!this.currentActivity;
+    this.currentActivity = null; this.elapsed = 0; this.isPaused = false;
+    this.pet.stopWork();
+    if (wasActive) this.pet.say('不干了喵~');
+  }
+  update() {
+    if (!this.currentActivity || this.isPaused) return;
+    this.elapsed++;
+    const totalFrames = this.duration * 60;
+    if (this.elapsed >= totalFrames) this._completeActivity();
+  }
+  _completeActivity() {
+    const config = ACTIVITY_CONFIG[this.currentActivity];
+    if (config) { this.pet.stats.applyActivityReward(config); this.pet.stats.gainExp(config.rewards.exp); }
+    this.pet.addEvent(`完成了${this._getLabel(this.currentActivity)}`);
+    this.pet.say(this._getCompleteMessage(this.currentActivity));
+    this.pet.stopWork(); this.pet.saveStats();
+    if (this.onComplete) this.onComplete(this.currentActivity);
+    this.currentActivity = null; this.elapsed = 0;
+  }
+  getProgress() {
+    if (!this.currentActivity) return null;
+    const totalFrames = this.duration * 60;
+    const pct = Math.min(100, Math.round((this.elapsed / totalFrames) * 100));
+    const remaining = this.duration - Math.floor(this.elapsed / 60);
+    return { pct, remaining, type: this.currentActivity, label: this._getLabel(this.currentActivity) };
+  }
+  getProgressString() {
+    const p = this.getProgress();
+    if (!p) return '';
+    return `${p.label}中... ${formatTime(p.remaining)}`;
+  }
+  _getLabel(type) { const map = { work: '工作', study: '学习', play: '玩耍' }; return map[type] || '活动'; }
+  _getStartMessage(type) {
+    const map = { work: '开始工作喵~赚钱买小鱼干！', study: '努力学习喵~', play: '耶！来玩吧！(≧▽≦)' };
+    return map[type] || '开始了喵~';
+  }
+  _getCompleteMessage(type) {
+    const map = { work: '工作完成！赚到零花钱了喵~', study: '学习结束！变聪明了喵~', play: '玩得好开心！喵喵~(๑•̀ㅂ•́)و✧' };
+    return map[type] || '完成了喵~';
+  }
+}
+
+// ====== DEMO APP (replaces app.js for browser) ======
+let pet, renderer, speech, llmClient, persona, chatUI, toolbar, settingsPanel, workSystem;
+let lastTime = performance.now();
+let dragState = null;
+
+const canvas = document.getElementById('pet-canvas');
+const container = document.getElementById('app-root');
+const hungerFill = document.getElementById('hunger-fill');
+const happyFill = document.getElementById('happy-fill');
+
+function initDemoApp() {
+  pet = new DesktopPet();
+  renderer = new PetRenderer(canvas, pet);
+
+  speech = new TypewriterSpeech();
+  pet.speech = speech;
+
+  llmClient = new LLMClient();
+  persona = new PersonaConfig();
+
+  chatUI = new ChatUI(container, pet, llmClient, persona, speech);
+
+  toolbar = new Toolbar(pet, {
+    feed: () => pet.feed(),
+    play: () => pet.play(),
+    chat: () => chatUI.toggle(),
+    settings: () => settingsPanel.show(),
+  });
+
+  settingsPanel = new SettingsPanel(llmClient, persona);
+  workSystem = new WorkSystem(pet);
+
+  if (llmClient.hasApiKey()) {
+    document.getElementById('api-warning').classList.add('visible');
+  }
+
+  setupDemoEvents();
+  gameLoop();
+}
+
+function setupDemoEvents() {
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 0) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = pet.canvasW / rect.width;
+      const scaleY = pet.canvasH / rect.height;
+      const mx = (e.clientX - rect.left) * scaleX;
+      const my = (e.clientY - rect.top) * scaleY;
+      const dist = Math.sqrt((mx - pet.x) ** 2 + (my - pet.y) ** 2);
+      if (dist < 55) {
+        dragState = { sx: e.clientX, sy: e.clientY, px: pet.x, py: pet.y, moved: false };
+      }
+    }
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!dragState) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = pet.canvasW / rect.width;
+    const scaleY = pet.canvasH / rect.height;
+    const dx = (e.clientX - dragState.sx) * scaleX;
+    const dy = (e.clientY - dragState.sy) * scaleY;
+    if (Math.abs(e.clientX - dragState.sx) > 3 || Math.abs(e.clientY - dragState.sy) > 3) {
+      dragState.moved = true;
+      pet.x = clamp(dragState.px + dx, 30, pet.canvasW - 30);
+      pet.y = clamp(dragState.py + dy, 80, pet.canvasH - 60);
+      if (!pet.isDragging) { pet.isDragging = true; pet.state = PetState.DRAG; }
+    }
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (!dragState) return;
+    if (pet.isDragging) { pet.isDragging = false; pet.onDragEnd(); }
+    else if (!dragState.moved) { pet.onClick(); }
+    dragState = null;
+  });
+
+  canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = pet.canvasW / rect.width;
+    const scaleY = pet.canvasH / rect.height;
+    const mx = (e.clientX - rect.left) * scaleX;
+    const my = (e.clientY - rect.top) * scaleY;
+    toolbar.toggle(mx, my);
+  });
+
+  document.addEventListener('click', (e) => {
+    if (toolbar.isVisible && !toolbar.el.contains(e.target) && e.target !== canvas) {
+      toolbar.hide();
+    }
+  });
+
+  canvas.addEventListener('mouseenter', () => { pet.isHovered = true; });
+  canvas.addEventListener('mouseleave', () => {
+    pet.isHovered = false;
+    if (pet.isDragging) { pet.isDragging = false; pet.onDragEnd(); }
+    dragState = null;
+  });
+
+  canvas.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 1) {
+      const t = e.touches[0];
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = pet.canvasW / rect.width;
+      const scaleY = pet.canvasH / rect.height;
+      const mx = (t.clientX - rect.left) * scaleX;
+      const my = (t.clientY - rect.top) * scaleY;
+      if (Math.sqrt((mx - pet.x) ** 2 + (my - pet.y) ** 2) < 55) {
+        dragState = { sx: t.clientX, sy: t.clientY, px: pet.x, py: pet.y, moved: false };
+      }
+    }
+    if (e.touches.length === 2 && chatUI) chatUI.toggle();
+  });
+
+  canvas.addEventListener('touchmove', (e) => {
+    if (!dragState || e.touches.length !== 1) return;
+    e.preventDefault();
+    const t = e.touches[0];
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = pet.canvasW / rect.width;
+    const scaleY = pet.canvasH / rect.height;
+    const dx = (t.clientX - dragState.sx) * scaleX;
+    const dy = (t.clientY - dragState.sy) * scaleY;
+    if (Math.abs(t.clientX - dragState.sx) > 3 || Math.abs(t.clientY - dragState.sy) > 3) {
+      dragState.moved = true;
+      pet.x = clamp(dragState.px + dx, 30, pet.canvasW - 30);
+      pet.y = clamp(dragState.py + dy, 80, pet.canvasH - 60);
+      if (!pet.isDragging) { pet.isDragging = true; pet.state = PetState.DRAG; }
+    }
+  });
+
+  canvas.addEventListener('touchend', () => {
+    if (!dragState) return;
+    if (pet.isDragging) { pet.isDragging = false; pet.onDragEnd(); }
+    else if (!dragState.moved) pet.onClick();
+    dragState = null;
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.shiftKey && e.key === 'C') {
+      e.preventDefault();
+      chatUI.toggle();
+    }
+  });
+}
+
+function gameLoop() {
+  const now = performance.now();
+  const dt = Math.min(now - lastTime, 50);
+  lastTime = now;
+
+  pet.update();
+  if (workSystem) workSystem.update();
+  if (toolbar.isVisible) toolbar.refreshStats();
+
+  hungerFill.style.width = `${pet.stats.hunger}%`;
+  happyFill.style.width = `${pet.stats.happiness}%`;
+
+  renderer.draw();
+
+  if (chatUI.isThinking) {
+    const ctx = canvas.getContext('2d');
+    const t = performance.now();
+    ctx.save();
+    const dotY = pet.y - 55;
+    for (let i = 0; i < 3; i++) {
+      const phase = (t / 400 + i * 0.33) % 1;
+      const alpha = 0.3 + 0.7 * Math.sin(phase * Math.PI);
+      ctx.fillStyle = `rgba(255,152,0,${alpha})`;
+      ctx.beginPath();
+      ctx.arc(pet.x - 8 + i * 8, dotY, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+// Public API (assigned to window for onclick handlers)
+window.DemoApp = {
+  feed: () => pet && pet.feed(),
+  play: () => pet && pet.play(),
+  sleep: () => pet && pet.goToSleep(),
+  chat: () => chatUI && chatUI.toggle(),
+  settings: () => settingsPanel && settingsPanel.show(),
+};
+
+// Start immediately (script is at end of body, DOM is ready)
+initDemoApp();
+</script>
+</body>
+</html>
