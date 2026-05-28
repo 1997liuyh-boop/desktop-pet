@@ -21,6 +21,20 @@
         "resizable": false,
         "visible": true,
         "center": false
+      },
+      {
+        "label": "settings",
+        "title": "设置 - Desktop Pet",
+        "width": 420,
+        "height": 520,
+        "url": "settings.html",
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "resizable": true,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {

@@ -165,70 +165,256 @@ class AnimationPlayer {
   }
 }
 
-// ── 右键菜单 ──
+// ── VPet 风格底部工具栏 ──
 
-class ContextMenu {
-  constructor() {
-    this.el = document.createElement('div');
-    this.el.id = 'context-menu';
-    Object.assign(this.el.style, {
-      position: 'fixed',
-      zIndex: '9999',
-      background: 'rgba(30,30,30,0.95)',
-      border: '1px solid rgba(255,255,255,0.15)',
-      borderRadius: '8px',
-      padding: '4px 0',
-      minWidth: '140px',
-      display: 'none',
-      fontFamily: 'sans-serif',
-      fontSize: '13px',
-      color: '#e0e0e0',
-      boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
-      backdropFilter: 'blur(12px)',
-    });
-    document.body.appendChild(this.el);
-    this._close = () => { this.hide(); };
+class ToolBar {
+  constructor(app) {
+    this.app = app;
+    this.visible = false;
+    this._submenuEl = null;
+    this._panelEl = null;
+    this._build();
   }
 
-  show(x, y, items) {
-    this.el.innerHTML = '';
-    items.forEach((item) => {
-      if (item === '-') {
-        const sep = document.createElement('div');
-        sep.style.cssText = 'height:1px;background:rgba(255,255,255,0.08);margin:4px 8px';
-        this.el.appendChild(sep);
-        return;
-      }
-      const div = document.createElement('div');
-      div.textContent = item.label;
-      Object.assign(div.style, {
-        padding: '6px 16px',
+  _build() {
+    // 主工具栏容器
+    this.el = document.createElement('div');
+    this.el.id = 'pet-toolbar';
+    Object.assign(this.el.style, {
+      position: 'fixed',
+      bottom: '0',
+      left: '0',
+      right: '0',
+      height: '42px',
+      zIndex: '9998',
+      display: 'none',
+      background: 'rgba(20,20,20,0.92)',
+      borderTop: '1px solid rgba(255,255,255,0.1)',
+      fontFamily: '"Microsoft YaHei", sans-serif',
+      fontSize: '13px',
+      color: '#d0d0d0',
+      userSelect: 'none',
+      WebkitUserSelect: 'none',
+      backdropFilter: 'blur(8px)',
+    });
+
+    const cols = [
+      { id: 'feed',    label: '投喂',  hasSub: true },
+      { id: 'panel',   label: '面板',  hasSub: false, hover: true },
+      { id: 'interact',label: '互动',  hasSub: true },
+      { id: 'diy',     label: '自定',  hasSub: false },
+      { id: 'system',  label: '系统',  hasSub: true },
+    ];
+
+    cols.forEach(col => {
+      const tab = document.createElement('div');
+      tab.className = 'tb-tab';
+      tab.textContent = col.label;
+      Object.assign(tab.style, {
+        flex: '1',
+        textAlign: 'center',
+        lineHeight: '42px',
         cursor: 'pointer',
-        whiteSpace: 'nowrap',
+        borderRight: '1px solid rgba(255,255,255,0.06)',
+        transition: 'background 0.15s',
       });
-      div.addEventListener('mouseenter', () => {
-        div.style.background = 'rgba(255,255,255,0.1)';
-      });
-      div.addEventListener('mouseleave', () => {
-        div.style.background = 'transparent';
-      });
-      div.addEventListener('mousedown', (e) => {
+
+      tab.addEventListener('mouseenter', () => { tab.style.background = 'rgba(255,255,255,0.08)'; });
+      tab.addEventListener('mouseleave', () => { tab.style.background = ''; });
+
+      tab.addEventListener('mousedown', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this.hide();
-        item.action();
+        if (col.id === 'feed') { this._showFeedSub(tab); }
+        else if (col.id === 'interact') { this._showInteractSub(tab); }
+        else if (col.id === 'system') { this._showSystemSub(tab); }
+        else if (col.id === 'diy') { this.app.showBubble('暂无自定功能', 1500); }
+        else if (col.id === 'panel') { /* hover 触发 */ }
       });
-      this.el.appendChild(div);
+
+      if (col.hover) {
+        tab.addEventListener('mouseenter', () => { this._showPanel(tab); });
+        tab.addEventListener('mouseleave', () => { this._hidePanel(); });
+      }
+
+      this.el.appendChild(tab);
     });
-    this.el.style.display = 'block';
-    this.el.style.left = `${Math.min(x, window.innerWidth - 160)}px`;
-    this.el.style.top = `${Math.min(y, window.innerHeight - this.el.offsetHeight - 10)}px`;
-    setTimeout(() => document.addEventListener('mousedown', this._close, { once: true }), 0);
+
+    document.body.appendChild(this.el);
+
+    // 全局点击关闭子菜单
+    document.addEventListener('mousedown', (e) => {
+      if (this._submenuEl && !this._submenuEl.contains(e.target) && !this.el.contains(e.target)) {
+        this._hideSubmenu();
+      }
+    });
+  }
+
+  toggle() {
+    this.visible = !this.visible;
+    this.el.style.display = this.visible ? 'flex' : 'none';
+    if (!this.visible) this._hideSubmenu();
   }
 
   hide() {
+    this.visible = false;
     this.el.style.display = 'none';
-    document.removeEventListener('mousedown', this._close);
+    this._hideSubmenu();
+    this._hidePanel();
+  }
+
+  // ── 子菜单 ──
+
+  _showFeedSub(anchor) {
+    this._showSubmenu(anchor, [
+      { label: '🍚 吃饭', action: () => this.app._handleFeed() },
+      { label: '🥤 喝水', action: () => this.app._handleDrink() },
+    ]);
+  }
+
+  _showInteractSub(anchor) {
+    this._showSubmenu(anchor, [
+      { label: '😴 睡觉', action: () => this._handleSleep() },
+      { label: '📖 学习', action: () => this.app._handleWork('study') },
+      { label: '💼 打工', action: () => this.app._handleWork('work') },
+      { label: '🧹 打扫', action: () => this.app._handleWork('clean') },
+      { label: '🎨 绘画', action: () => this.app._handleWork('painting') },
+      { label: '🎮 玩耍', action: () => this.app._handlePlay() },
+      { label: '💬 聊天', action: () => this.app.chatUI.toggle() },
+    ]);
+  }
+
+  _showSystemSub(anchor) {
+    this._showSubmenu(anchor, [
+      { label: '⚙ 设置', action: () => this.app.settingsUI.show() },
+      { label: '🚪 退出', action: () => { if (confirm('确定要退出桌宠吗？')) invoke('quit_app', {}); } },
+    ]);
+  }
+
+  _showSubmenu(anchor, items) {
+    this._hideSubmenu();
+    const menu = document.createElement('div');
+    menu.className = 'tb-submenu';
+    Object.assign(menu.style, {
+      position: 'fixed',
+      bottom: '48px',
+      left: anchor.getBoundingClientRect().left + 'px',
+      zIndex: '9999',
+      background: 'rgba(20,20,20,0.95)',
+      border: '1px solid rgba(255,255,255,0.15)',
+      borderRadius: '6px',
+      padding: '4px 0',
+      minWidth: '120px',
+      fontFamily: '"Microsoft YaHei", sans-serif',
+      fontSize: '12px',
+      color: '#d0d0d0',
+      boxShadow: '0 2px 16px rgba(0,0,0,0.5)',
+      backdropFilter: 'blur(10px)',
+    });
+
+    items.forEach(item => {
+      const row = document.createElement('div');
+      row.textContent = item.label;
+      Object.assign(row.style, {
+        padding: '6px 14px',
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+      });
+      row.addEventListener('mouseenter', () => { row.style.background = 'rgba(255,255,255,0.1)'; });
+      row.addEventListener('mouseleave', () => { row.style.background = ''; });
+      row.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this._hideSubmenu();
+        item.action();
+      });
+      menu.appendChild(row);
+    });
+
+    document.body.appendChild(menu);
+    this._submenuEl = menu;
+  }
+
+  _hideSubmenu() {
+    if (this._submenuEl) {
+      this._submenuEl.remove();
+      this._submenuEl = null;
+    }
+  }
+
+  // ── 状态面板 (hover) ──
+
+  async _showPanel(anchor) {
+    this._hidePanel();
+    try {
+      const status = await invoke('get_pet_status', {});
+      const s = status.stats;
+      const panel = document.createElement('div');
+      panel.className = 'tb-panel';
+      Object.assign(panel.style, {
+        position: 'fixed',
+        bottom: '48px',
+        left: anchor.getBoundingClientRect().left + 'px',
+        zIndex: '9999',
+        background: 'rgba(20,20,20,0.95)',
+        border: '1px solid rgba(255,255,255,0.15)',
+        borderRadius: '8px',
+        padding: '10px 14px',
+        minWidth: '160px',
+        fontFamily: '"Microsoft YaHei", sans-serif',
+        fontSize: '12px',
+        color: '#d0d0d0',
+        boxShadow: '0 2px 16px rgba(0,0,0,0.5)',
+      });
+
+      const rows = [
+        `等级: Lv.${s.level}  | 金币: 💰${s.money.toFixed(1)}`,
+        `经验: ${s.exp}/${s.level * 100}`,
+        `体力: ${this._bar(s.energy)}`,
+        `心情: ${this._bar(s.happiness)}`,
+        `饱腹: ${this._bar(s.hunger)}`,
+        `口渴: ${this._bar(s.thirst)}`,
+        `健康: ${this._bar(s.health)}`,
+      ];
+      panel.innerHTML = rows.map(r => `<div style="margin:3px 0">${r}</div>`).join('');
+
+      document.body.appendChild(panel);
+      this._panelEl = panel;
+    } catch (_) {}
+  }
+
+  _bar(val) {
+    const n = Math.round(val / 10);
+    return '█'.repeat(n) + '░'.repeat(10 - n) + ` ${val.toFixed(0)}%`;
+  }
+
+  _hidePanel() {
+    if (this._panelEl) {
+      this._panelEl.remove();
+      this._panelEl = null;
+    }
+  }
+
+  // ── 睡觉 ──
+
+  _handleSleep() {
+    invoke('pet_action_sleep', {}).then((result) => {
+      if (result.sleepToggled) {
+        if (result.isSleeping) {
+          this.app.playAnimation('sleep', this.app.mode);
+          this.app.showBubble('晚安 Zzz...', 2000);
+        } else {
+          this.app.playAnimation('default', this.app.mode);
+          this.app.showBubble('起床啦!', 1500);
+        }
+      } else if (result.message) {
+        this.app.showBubble(result.message, 1500);
+      }
+    }).catch(() => {
+      this.app.playAnimation('sleep', this.app.mode);
+      this.app.showBubble('晚安 Zzz...', 2000);
+    });
+    this.hide();
   }
 }
 
@@ -262,15 +448,19 @@ class DesktopPetApp {
     this._dragStartX = 0;
     this._dragStartY = 0;
     this._pressStartTime = 0;
+    this._lastClickTime = 0;       // 点击防抖
     this._hoveredPart = null;  // 'head' | 'body' | null
 
-    this._contextMenu = new ContextMenu();
+    this._toolbar = new ToolBar(this);
 
     // 行走状态
     this._facingRight = true;
     this._walkTimer = null;
     this._walkGraphType = 'default';
     this._manualAnimLock = false;  // 手动交互(喂食/摸头)时锁住, 防止被行走覆盖
+    this._manualAnimTimer = null;  // 手动动画锁定定时器句柄
+    this._animatingLock = false;   // 防止并发 playAnimation
+    this._clickthroughEnabled = false;  // 当前是否已启用点击穿透
 
     // UI 面板
     this.chatUI = new ChatUI(this);
@@ -299,12 +489,23 @@ class DesktopPetApp {
       let tickCount = 0;
       this._tickInterval = setInterval(() => {
         invoke('game_tick', { dtSeconds: 1.0 }).then((result) => {
-          if (result.mood && result.mood !== this.mode && !this._manualAnimLock) {
+          // 工作期间强制保持 work 动画
+          if (result.graphType === 'work' && this.graphType !== 'work' && !this._manualAnimLock) {
+            this.playAnimation('work', 'normal');
+          }
+          // 工作完成 → 恢复 default
+          if (result.workFinished && this.graphType === 'work') {
+            this._manualAnimLock = false;
+            if (this._manualAnimTimer) { clearTimeout(this._manualAnimTimer); this._manualAnimTimer = null; }
+            this.playAnimation('default', result.mood || 'normal');
+            this.showBubble('工作完成!', 3000);
+          }
+          // 非工作状态下处理 mood 变化
+          if (result.graphType !== 'work' && result.mood && result.mood !== this.mode && !this._manualAnimLock) {
             this.mode = result.mood;
             this.playAnimation(result.graphType || this.graphType, result.mood);
           }
           if (result.leveledUp) this.showBubble('升级啦!', 3000);
-          if (result.workFinished) this.showBubble('工作完成!', 3000);
         }).catch(() => {});
 
         tickCount++;
@@ -321,6 +522,9 @@ class DesktopPetApp {
 
       // 4.5 自主行走 — 每 120ms tick 一次
       this._walkTimer = setInterval(() => this._walkTick(), 120);
+
+      // 4.6 点击穿透轮询 — 每 150ms 检测鼠标是否在宠物精灵上
+      this._clickthroughInterval = setInterval(() => this._checkClickthrough(), 150);
 
       // 5. 启动渲染循环
       this.lastTime = performance.now();
@@ -401,27 +605,65 @@ class DesktopPetApp {
   }
 
   // 切换动画
-  async playAnimation(graphType, mode, onComplete) {
+  // options: { autoEndLoops?: number } - 自动在 N 次 b_loop 后触发 c_end
+  async playAnimation(graphType, mode, onComplete, options = {}) {
+    // 防止并发: 如果正在切换动画则跳过
+    if (this._animatingLock) return;
+    this._animatingLock = true;
+
+    // 清除上一个手动动画锁定时器
+    if (this._manualAnimTimer) {
+      clearTimeout(this._manualAnimTimer);
+      this._manualAnimTimer = null;
+    }
+
     // 锁定手动动画，防止闲置行为覆盖
     this._manualAnimLock = true;
-    const releaseLock = () => { this._manualAnimLock = false; };
-    setTimeout(releaseLock, 4000);  // 4秒后自动释放
+    const lockDuration = (options.autoEndLoops || 0) > 0 ? (options.autoEndLoops * 1000 + 2000) : 4000;
+    this._manualAnimTimer = setTimeout(() => {
+      this._manualAnimLock = false;
+      this._manualAnimTimer = null;
+    }, lockDuration);
 
-    await this._loadAnimation(graphType, mode);
-    if (onComplete) {
+    try {
+      await this._loadAnimation(graphType, mode);
+    } catch (e) {
+      console.warn('加载动画失败:', e);
+    }
+
+    // 自动触发 c_end (用于 pinch 等有结束动画的动作)
+    if (options.autoEndLoops && options.autoEndLoops > 0) {
+      const loops = options.autoEndLoops;
+      let loopCount = 0;
+      const origUpdate = this.player.update.bind(this.player);
+      // 在 b_loop 阶段计数，达到次数后触发 c_end
+      const checkInterval = setInterval(() => {
+        if (this.player.currentPhase === 'b_loop' && this.player.isPlaying) {
+          // 通过监听 phase 切换来计数
+          loopCount++;
+          if (loopCount >= loops) {
+            clearInterval(checkInterval);
+            this.player.triggerEnd(() => {
+              this._manualAnimLock = false;
+              if (this._manualAnimTimer) { clearTimeout(this._manualAnimTimer); this._manualAnimTimer = null; }
+              if (onComplete) onComplete();
+            });
+          }
+        }
+      }, 800); // pinch b_loop 约 750ms, 检查间隔略大于一个循环
+    }
+
+    if (onComplete && !options.autoEndLoops) {
       const origComplete = this.player.onComplete;
       this.player.onComplete = () => {
         if (origComplete) origComplete();
-        releaseLock();
+        this._manualAnimLock = false;
+        if (this._manualAnimTimer) { clearTimeout(this._manualAnimTimer); this._manualAnimTimer = null; }
         onComplete();
       };
-    } else {
-      const origComplete = this.player.onComplete;
-      this.player.onComplete = () => {
-        if (origComplete) origComplete();
-        releaseLock();
-      };
     }
+
+    this._animatingLock = false;
   }
 
   // ── 交互事件绑定 ──
@@ -517,10 +759,10 @@ class DesktopPetApp {
       }
     });
 
-    // 右键菜单
+    // 右键菜单 — 切换底部工具栏
     this.canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      this._showContextMenu(e.clientX, e.clientY);
+      this._toolbar.toggle();
     });
   }
 
@@ -552,6 +794,11 @@ class DesktopPetApp {
 
   async _onClickPart(lx, ly, pressDurationMs) {
     if (this._dragging) return;
+
+    // 防抖: 300ms 内不允许重复点击 (防止多次点击导致 Rust 锁竞争)
+    if (this._lastClickTime && performance.now() - this._lastClickTime < 300) return;
+    this._lastClickTime = performance.now();
+
     try {
       const result = await invoke('process_interaction', {
         lx, ly, pressDurationMs, hasMoved: false,
@@ -575,22 +822,25 @@ class DesktopPetApp {
     try {
       const result = await invoke('pet_action_feed', {});
       if (result.graphType) this.playAnimation(result.graphType, result.mood || 'normal');
+      if (result.showBubble) this.showBubble(result.showBubble, 2000);
       if (result.message) console.log('[Pet]:', result.message);
-    } catch(e) { this.playAnimation('eat', 'normal'); }
+    } catch(e) { this.showBubble('吃不了...', 2000); }
   }
 
   async _handleDrink() {
     try {
       const result = await invoke('pet_action_drink', {});
       if (result.graphType) this.playAnimation(result.graphType, result.mood || 'normal');
+      if (result.showBubble) this.showBubble(result.showBubble, 2000);
       if (result.message) console.log('[Pet]:', result.message);
-    } catch(e) { this.playAnimation('drink', 'normal'); }
+    } catch(e) { this.showBubble('喝不了...', 2000); }
   }
 
   async _handlePlay() {
     try {
       const result = await invoke('pet_action_play', {});
       if (result.graphType) this.playAnimation(result.graphType, result.mood || 'normal');
+      if (result.workStarted) this.showBubble(`来玩吧! (${Math.round(result.duration)}s)`, 3000);
       if (result.message) console.log('[Pet]:', result.message);
     } catch(e) { this.playAnimation('default', 'happy'); }
   }
@@ -598,8 +848,13 @@ class DesktopPetApp {
   async _handlePinch() {
     try {
       const result = await invoke('pet_action_pinch', {});
-      if (result.graphType) this.playAnimation(result.graphType, result.mood || 'normal');
-      if (result.message) console.log('[Pet]:', result.message);
+      if (result.graphType) {
+        // pinch 有 a_start → b_loop → c_end, 播 3 次 b_loop 后自动关闭
+        this.playAnimation(result.graphType, result.mood || 'normal', () => {
+          this.playAnimation('default', this.mode);
+        }, { autoEndLoops: 3 });
+      }
+      if (result.message) this.showBubble(result.message, 2000);
     } catch(e) { this.showBubble('捏不到喵~', 2000); }
   }
 
@@ -607,28 +862,10 @@ class DesktopPetApp {
     try {
       const result = await invoke('pet_action_work', { workType: type });
       if (result.workStarted) {
-        this.showBubble(`开始工作! (${result.duration}s)`, 3000);
+        this.showBubble(`开始工作! (${Math.round(result.duration)}s)`, 3000);
         if (result.graphType) this.playAnimation(result.graphType, 'normal');
       }
     } catch(e) { console.warn('工作启动失败:', e); }
-  }
-
-  _showContextMenu(x, y) {
-    this._contextMenu.show(x, y, [
-      { label: '喂食', action: () => this._handleFeed() },
-      { label: '喝水', action: () => this._handleDrink() },
-      { label: '玩耍', action: () => this._handlePlay() },
-      { label: '捏一下', action: () => this._handlePinch() },
-      '-',
-      { label: '工作 (打工)', action: () => this._handleWork('work') },
-      { label: '工作 (学习)', action: () => this._handleWork('study') },
-      { label: '工作 (打扫)', action: () => this._handleWork('clean') },
-      { label: '聊天', action: () => this.chatUI.toggle() },
-      { label: '状态', action: () => invoke('get_pet_status', {}).then(r => console.log('状态:', r)) },
-      '-',
-      { label: '设置', action: () => this.settingsUI.show() },
-      { label: '退出', action: () => invoke('quit_app', {}) },
-    ]);
   }
 
   // ── 游戏循环 ──
@@ -711,6 +948,8 @@ class DesktopPetApp {
 
   async _walkTick() {
     if (this._dragging) return;
+    // 聊天进行中不移动
+    if (this.chatUI && this.chatUI._isSending) return;
     try {
       const [pos, screen] = await Promise.all([
         invoke('get_window_position', {}),
@@ -744,10 +983,79 @@ class DesktopPetApp {
     } catch (e) { /* 静默 */ }
   }
 
+  // ── 点击穿透 ──
+  // 轮询检测鼠标是否在宠物精灵非透明像素上，动态切换窗口点击穿透
+
+  async _checkClickthrough() {
+    if (this._dragging) return; // 拖拽中不切换
+
+    try {
+      const [pos, cursorPos] = await Promise.all([
+        invoke('get_window_position', {}),
+        window.__TAURI__.window.getCurrent().cursorPosition().catch(() => null),
+      ]);
+      if (!cursorPos || !pos) return;
+
+      // 光标是否在窗口范围内
+      const inWindow =
+        cursorPos.x >= pos.x && cursorPos.x <= pos.x + pos.width &&
+        cursorPos.y >= pos.y && cursorPos.y <= pos.y + pos.height;
+
+      if (!inWindow) {
+        // 光标不在窗口上 → 开启穿透
+        if (!this._clickthroughEnabled) {
+          this._clickthroughEnabled = true;
+          invoke('set_clickthrough', { enabled: true }).catch(() => {});
+        }
+        return;
+      }
+
+      // 光标在窗口上 → 检查 canvas 像素
+      const cx = cursorPos.x - pos.x;
+      const cy = cursorPos.y - pos.y;
+
+      // 检查精灵大致区域 (命中检测椭圆包围盒: x 130~370, y 80~440)
+      const inSpriteBounds = cx >= 120 && cx <= 380 && cy >= 70 && cy <= 450;
+
+      if (!inSpriteBounds) {
+        // 光标在透明边缘 → 开启穿透
+        if (!this._clickthroughEnabled) {
+          this._clickthroughEnabled = true;
+          invoke('set_clickthrough', { enabled: true }).catch(() => {});
+        }
+        return;
+      }
+
+      // 像素级检测
+      let hasPixel = false;
+      try {
+        const pixelData = this.ctx.getImageData(Math.round(cx), Math.round(cy), 1, 1);
+        hasPixel = pixelData && pixelData.data[3] > 10; // alpha > 10
+      } catch (_) {
+        hasPixel = true; // 读取出错则保守处理
+      }
+
+      if (hasPixel) {
+        // 光标在精灵像素上 → 关闭穿透 (可交互)
+        if (this._clickthroughEnabled) {
+          this._clickthroughEnabled = false;
+          invoke('set_clickthrough', { enabled: false }).catch(() => {});
+        }
+      } else {
+        // 透明像素 → 开启穿透
+        if (!this._clickthroughEnabled) {
+          this._clickthroughEnabled = true;
+          invoke('set_clickthrough', { enabled: true }).catch(() => {});
+        }
+      }
+    } catch (_) { /* 静默 */ }
+  }
+
   // ── SideHide 边缘检测 ──
 
   async _checkSideHide() {
     if (this._dragging || this._manualAnimLock) return;
+    if (this.chatUI && this.chatUI._isSending) return;
     try {
       const [pos, screen, mousePos] = await Promise.all([
         invoke('get_window_position', {}),
@@ -784,49 +1092,80 @@ class ChatUI {
   constructor(app) {
     this.app = app;
     this.history = [];
+    this._isSending = false;   // 是否正在等待AI回复
     this._buildDom();
     this._bindEvents();
+  }
+
+  get isVisible() {
+    return this.el.style.display === 'flex';
   }
 
   _buildDom() {
     this.el = document.createElement('div');
     this.el.id = 'chat-panel';
     Object.assign(this.el.style, {
-      position: 'fixed', bottom: '24px', left: '0', right: '0', height: '220px',
-      background: 'rgba(20,20,20,0.92)',
-      borderTop: '1px solid rgba(255,255,255,0.1)',
+      position: 'fixed', top: '0', left: '50%', transform: 'translateX(-50%)',
+      width: '280px', maxHeight: '160px',
+      background: 'rgba(20,20,20,0.85)',
+      borderBottomLeftRadius: '10px',
+      borderBottomRightRadius: '10px',
       display: 'none', flexDirection: 'column',
-      fontFamily: 'sans-serif', fontSize: '13px', color: '#e0e0e0',
+      fontFamily: 'sans-serif', fontSize: '12px', color: '#e0e0e0',
       zIndex: '100', backdropFilter: 'blur(10px)',
+      boxShadow: '0 2px 12px rgba(0,0,0,0.4)',
     });
+
+    // 标题栏 (含关闭按钮)
+    const header = document.createElement('div');
+    Object.assign(header.style, {
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+      padding: '4px 10px', borderBottom: '1px solid rgba(255,255,255,0.06)',
+      fontSize: '12px', color: '#999',
+    });
+    const title = document.createElement('span');
+    title.textContent = '聊天';
+    const closeBtn = document.createElement('span');
+    closeBtn.textContent = '×';
+    closeBtn.title = '关闭 (Esc)';
+    Object.assign(closeBtn.style, {
+      cursor: 'pointer', fontSize: '16px', lineHeight: '1',
+      color: '#888', padding: '0 4px',
+    });
+    closeBtn.addEventListener('click', () => this.hide());
+    closeBtn.addEventListener('mouseenter', () => closeBtn.style.color = '#fff');
+    closeBtn.addEventListener('mouseleave', () => closeBtn.style.color = '#888');
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    this.el.appendChild(header);
 
     this.msgArea = document.createElement('div');
     Object.assign(this.msgArea.style, {
-      flex: '1', overflowY: 'auto', padding: '8px 12px',
-      display: 'flex', flexDirection: 'column',
+      flex: '1', overflowY: 'auto', padding: '4px 10px',
+      display: 'flex', flexDirection: 'column', maxHeight: '100px',
     });
     this.el.appendChild(this.msgArea);
 
     const inputRow = document.createElement('div');
     Object.assign(inputRow.style, {
-      display: 'flex', padding: '6px 8px', gap: '6px',
+      display: 'flex', padding: '4px 8px', gap: '4px',
       borderTop: '1px solid rgba(255,255,255,0.06)',
     });
 
     this.input = document.createElement('input');
     Object.assign(this.input.style, {
       flex: '1', background: 'rgba(255,255,255,0.08)', border: 'none',
-      borderRadius: '6px', padding: '6px 10px', color: '#e0e0e0',
-      outline: 'none', fontSize: '13px',
+      borderRadius: '6px', padding: '4px 8px', color: '#e0e0e0',
+      outline: 'none', fontSize: '12px',
     });
-    this.input.placeholder = '和宠物说点什么...';
+    this.input.placeholder = '说点什么...';
 
     const sendBtn = document.createElement('button');
     sendBtn.textContent = '发送';
     Object.assign(sendBtn.style, {
       background: 'rgba(100,150,255,0.3)', border: 'none',
-      borderRadius: '6px', padding: '6px 14px', color: '#d0d8ff',
-      cursor: 'pointer', fontSize: '13px',
+      borderRadius: '6px', padding: '4px 10px', color: '#d0d8ff',
+      cursor: 'pointer', fontSize: '12px',
     });
     this.sendBtn = sendBtn;
 
@@ -838,26 +1177,42 @@ class ChatUI {
 
   _bindEvents() {
     this.sendBtn.addEventListener('click', () => this._send());
-    this.input.addEventListener('keydown', (e) => { if (e.key === 'Enter') this._send(); });
+    this.input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this._send();
+      if (e.key === 'Escape') this.hide();
+    });
+    // 全局 Esc
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.isVisible) this.hide();
+    });
+  }
+
+  show() {
+    this.el.style.display = 'flex';
+    this.input.focus();
+  }
+
+  hide() {
+    this.el.style.display = 'none';
+    this._isSending = false;
   }
 
   toggle() {
-    const visible = this.el.style.display === 'flex';
-    this.el.style.display = visible ? 'none' : 'flex';
-    if (!visible) this.input.focus();
+    if (this.isVisible) { this.hide(); } else { this.show(); }
   }
 
   async _send() {
     const msg = this.input.value.trim();
-    if (!msg) return;
+    if (!msg || this._isSending) return;
     this.input.value = '';
+    this._isSending = true;
 
     this._addBubble('user', msg);
     const bubble = this._addBubble('assistant', '...');
 
     try {
       const config = await invoke('load_llm_config', {});
-      if (!config.api_key) { bubble.el.textContent = '请先在设置中配置 API Key'; return; }
+      if (!config.api_key) { bubble.el.textContent = '请先在设置中配置 API Key'; this._isSending = false; return; }
 
       const status = await invoke('get_pet_status', {});
       const prompt = await invoke('build_persona_prompt', {
@@ -874,6 +1229,7 @@ class ChatUI {
       });
       const unlistenDone = window.__TAURI__.event.listen('llm-stream-done', (event) => {
         bubble.el.textContent = event.payload || fullText;
+        this._isSending = false;
       });
 
       const newHistory = await invoke('chat_stream', {
@@ -885,7 +1241,10 @@ class ChatUI {
         unlistenChunk.then(fn => fn()); unlistenDone.then(fn => fn());
       }, 500);
     } catch (e) {
-      bubble.el.textContent = `请求失败: ${e}`;
+      const errMsg = typeof e === 'string' ? e : (e?.message || e?.toString() || JSON.stringify(e) || '未知错误');
+      bubble.el.textContent = `请求失败: ${errMsg}`;
+      console.error('Chat error:', e);
+      this._isSending = false;
     }
   }
 
@@ -907,158 +1266,23 @@ class ChatUI {
 }
 
 // ── 设置面板 ──
+// 设置窗口已改为独立 Tauri 窗口 (centered, decorated, draggable)
 
 class SettingsUI {
   constructor(app) {
     this.app = app;
-    this._buildDom();
-  }
-
-  _buildDom() {
-    this.el = document.createElement('div');
-    this.el.id = 'settings-panel';
-    Object.assign(this.el.style, {
-      position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.85)',
-      display: 'none', alignItems: 'center', justifyContent: 'center',
-      zIndex: '200', fontFamily: 'sans-serif',
-    });
-
-    const card = document.createElement('div');
-    Object.assign(card.style, {
-      background: 'rgba(30,30,30,0.97)', borderRadius: '12px',
-      padding: '20px 24px', width: '360px', maxHeight: '80vh',
-      overflowY: 'auto', color: '#e0e0e0', fontSize: '13px',
-      border: '1px solid rgba(255,255,255,0.1)',
-    });
-
-    const title = document.createElement('h3');
-    title.textContent = '设置';
-    title.style.cssText = 'margin:0 0 16px;font-size:16px;color:#fff';
-    card.appendChild(title);
-
-    this._addInput(card, 'API 地址', 'endpoint', 'https://api.openai.com/v1/chat/completions');
-    this._addInput(card, 'API Key', 'apiKey', '', 'password');
-    this._addInput(card, '模型', 'model', 'gpt-3.5-turbo');
-    this._addInput(card, 'Temperature', 'temperature', '0.8');
-
-    // 协议选择
-    const protoLabel = document.createElement('div');
-    protoLabel.textContent = '协议';
-    protoLabel.style.cssText = 'margin-top:12px;color:#aaa;font-size:12px';
-    card.appendChild(protoLabel);
-    this.protocolSelect = document.createElement('select');
-    Object.assign(this.protocolSelect.style, {
-      width: '100%', padding: '6px 8px', marginTop: '4px',
-      background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)',
-      borderRadius: '6px', color: '#e0e0e0', fontSize: '13px', boxSizing: 'border-box',
-    });
-    ['openai', 'anthropic'].forEach(v => {
-      const opt = document.createElement('option');
-      opt.value = v;
-      opt.textContent = v === 'openai' ? 'OpenAI 兼容' : 'Anthropic 兼容';
-      this.protocolSelect.appendChild(opt);
-    });
-    card.appendChild(this.protocolSelect);
-
-    const personaLabel = document.createElement('div');
-    personaLabel.textContent = '人设';
-    personaLabel.style.cssText = 'margin-top:12px;color:#aaa;font-size:12px';
-    card.appendChild(personaLabel);
-
-    this.personaSelect = document.createElement('select');
-    Object.assign(this.personaSelect.style, {
-      width: '100%', padding: '6px 8px', marginTop: '4px',
-      background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)',
-      borderRadius: '6px', color: '#e0e0e0', fontSize: '13px', boxSizing: 'border-box',
-    });
-    card.appendChild(this.personaSelect);
-
-    const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex;gap:8px;margin-top:16px';
-
-    const saveBtn = document.createElement('button');
-    saveBtn.textContent = '保存';
-    Object.assign(saveBtn.style, {
-      flex: '1', padding: '8px', background: 'rgba(100,150,255,0.3)',
-      border: 'none', borderRadius: '6px', color: '#d0d8ff',
-      cursor: 'pointer', fontSize: '13px',
-    });
-    saveBtn.addEventListener('click', () => this._save());
-
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = '关闭';
-    Object.assign(closeBtn.style, {
-      flex: '1', padding: '8px', background: 'rgba(255,255,255,0.06)',
-      border: 'none', borderRadius: '6px', color: '#aaa',
-      cursor: 'pointer', fontSize: '13px',
-    });
-    closeBtn.addEventListener('click', () => this.hide());
-
-    btnRow.appendChild(saveBtn);
-    btnRow.appendChild(closeBtn);
-    card.appendChild(btnRow);
-    this.el.appendChild(card);
-    document.body.appendChild(this.el);
-  }
-
-  _addInput(parent, label, key, placeholder, type) {
-    const lbl = document.createElement('div');
-    lbl.textContent = label;
-    lbl.style.cssText = 'margin-top:10px;color:#aaa;font-size:12px';
-    parent.appendChild(lbl);
-    const input = document.createElement('input');
-    input.type = type || 'text';
-    input.placeholder = placeholder;
-    input.dataset.key = key;
-    Object.assign(input.style, {
-      width: '100%', padding: '6px 8px', marginTop: '4px',
-      background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)',
-      borderRadius: '6px', color: '#e0e0e0', fontSize: '13px',
-      outline: 'none', boxSizing: 'border-box',
-    });
-    parent.appendChild(input);
   }
 
   async show() {
-    this.el.style.display = 'flex';
     try {
-      const config = await invoke('load_llm_config', {});
-      const qs = (k) => this.el.querySelector(`[data-key="${k}"]`);
-      const val = (k, d) => { const e = qs(k); if (e) e.value = d; };
-      val('endpoint', config.endpoint || '');
-      val('apiKey', config.api_key || '');
-      val('model', config.model || '');
-      val('temperature', String(config.temperature || 0.8));
-      if (this.protocolSelect) this.protocolSelect.value = config.protocol || 'openai';
-
-      const presets = await invoke('get_persona_presets', {});
-      this.personaSelect.innerHTML = '';
-      presets.forEach((p) => {
-        const opt = document.createElement('option');
-        opt.value = p.name;
-        opt.textContent = `${p.name} — ${p.description}`;
-        this.personaSelect.appendChild(opt);
-      });
-    } catch(e) { console.warn('加载配置失败:', e); }
+      await invoke('open_settings_window', {});
+    } catch (e) {
+      console.warn('打开设置窗口失败:', e);
+      this.app.showBubble('无法打开设置窗口', 2000);
+    }
   }
 
-  hide() { this.el.style.display = 'none'; }
-
-  async _save() {
-    const qs = (k) => this.el.querySelector(`[data-key="${k}"]`);
-    try {
-      const config = {
-        endpoint: (qs('endpoint') || { value: '' }).value,
-        api_key: (qs('apiKey') || { value: '' }).value,
-        model: (qs('model') || { value: '' }).value,
-        temperature: parseFloat((qs('temperature') || { value: '0.8' }).value || '0.8'),
-        max_tokens: 1024,
-        protocol: this.protocolSelect ? this.protocolSelect.value : 'openai',
-      };
-      await invoke('save_llm_config', { config });
-    } catch(e) { console.warn('保存配置失败:', e); }
-    this.hide();
-  }
+  hide() {}
 }
 
 window.addEventListener('DOMContentLoaded', () => {

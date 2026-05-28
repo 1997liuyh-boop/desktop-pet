@@ -5,24 +5,40 @@ use tauri::Emitter;
 /// LLM 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMConfig {
+    #[serde(default = "default_endpoint")]
     pub endpoint: String,
+    #[serde(default)]
     pub api_key: String,
+    #[serde(default = "default_model")]
     pub model: String,
+    #[serde(default = "default_temperature")]
     pub temperature: f64,
+    #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
     /// "openai" | "anthropic"
+    #[serde(default = "default_protocol")]
     pub protocol: String,
+    /// 当前选择的人设名称
+    #[serde(default)]
+    pub persona: Option<String>,
 }
+
+fn default_endpoint() -> String { "https://api.openai.com/v1/chat/completions".into() }
+fn default_model() -> String { "gpt-3.5-turbo".into() }
+fn default_temperature() -> f64 { 0.8 }
+fn default_max_tokens() -> u32 { 1024 }
+fn default_protocol() -> String { "openai".into() }
 
 impl Default for LLMConfig {
     fn default() -> Self {
         Self {
-            endpoint: "https://api.openai.com/v1/chat/completions".into(),
+            endpoint: default_endpoint(),
             api_key: String::new(),
-            model: "gpt-3.5-turbo".into(),
-            temperature: 0.8,
-            max_tokens: 1024,
-            protocol: "openai".into(),
+            model: default_model(),
+            temperature: default_temperature(),
+            max_tokens: default_max_tokens(),
+            protocol: default_protocol(),
+            persona: None,
         }
     }
 }
@@ -82,14 +98,33 @@ pub async fn chat_stream(
 
     // ── 发送请求 ──
     let client = reqwest::Client::new();
+
+    // 构造目标 URL: Anthropic 协议自动拼接 /v1/messages
+    let target_url = if is_anthropic && !config.endpoint.ends_with("/v1/messages") {
+        let base = config.endpoint.trim_end_matches('/');
+        format!("{}/v1/messages", base)
+    } else {
+        config.endpoint.clone()
+    };
+
     let mut req = client
-        .post(&config.endpoint)
+        .post(&target_url)
         .header("Content-Type", "application/json");
 
     if is_anthropic {
-        req = req
-            .header("x-api-key", &config.api_key)
-            .header("anthropic-version", "2023-06-01");
+        // TokenPlan / 代理层通常使用 Bearer 认证
+        let is_tokenplan = config.api_key.starts_with("tp-")
+            || config.endpoint.contains("token-plan")
+            || config.endpoint.contains("xiaomimimo");
+        if is_tokenplan {
+            req = req
+                .header("Authorization", format!("Bearer {}", config.api_key))
+                .header("anthropic-version", "2023-06-01");
+        } else {
+            req = req
+                .header("x-api-key", &config.api_key)
+                .header("anthropic-version", "2023-06-01");
+        }
     } else {
         req = req.header("Authorization", format!("Bearer {}", config.api_key));
     }

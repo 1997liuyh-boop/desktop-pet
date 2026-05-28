@@ -76,6 +76,17 @@ impl WorkSystem {
         if self.duration <= 0.0 { return 0.0; }
         (self.elapsed / self.duration).min(1.0)
     }
+
+    /// 工作强度 (0.0~1.0), 用于属性消耗倍率
+    pub fn intensity(&self) -> f64 {
+        match self.activity_type {
+            ActivityType::Work => 1.0,
+            ActivityType::Study => 0.5,
+            ActivityType::Play => 0.3,
+            ActivityType::WorkClean => 0.8,
+            ActivityType::StudyPaint => 0.6,
+        }
+    }
 }
 
 pub struct WorkTickResult {

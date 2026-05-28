@@ -81,16 +81,13 @@ impl WalkSystem {
     }
 
     /// 返回当前应该播放的 graph_type
+    /// 注意: 所有闲置阶段都使用 "default" graph (动画选择由 mood/模式决定)
+    /// 仅行走时使用 "move"
     pub fn current_graph_type(&self) -> &str {
         if self.state == WalkState::Walking {
             return "move";
         }
-        match self.idle_phase {
-            IdlePhase::Standing => "default",
-            IdlePhase::IdleAnim => "idle",
-            IdlePhase::Think => "think",
-            IdlePhase::Switch => "switch",
-        }
+        "default"
     }
 
     /// 每帧更新，返回建议的窗口位移量 (dx, dy)

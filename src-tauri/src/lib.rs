@@ -42,10 +42,13 @@ pub fn run() {
             commands::pet_action_play,
             commands::pet_action_work,
             commands::pet_action_pinch,
+            commands::pet_action_sleep,
             commands::get_work_types,
             commands::game_tick,
             commands::walk_tick,
             commands::sidehide_check,
+            commands::open_settings_window,
+            commands::set_clickthrough,
         ])
         .setup(|app| {
             use tauri::menu::{MenuBuilder, MenuItemBuilder};

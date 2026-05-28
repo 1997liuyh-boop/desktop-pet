@@ -109,13 +109,18 @@ impl Stats {
         self.data.likability = (self.data.likability + amount).min(100.0);
     }
 
-    /// 工作/学习
+    /// 工作收益 (仅累计金币和经验, 属性消耗由 game_tick 按秒扣除)
     pub fn work(&mut self, reward: f64, exp_gain: u64) {
         self.data.money += reward;
         self.data.exp += exp_gain;
-        self.data.energy = (self.data.energy - 15.0).max(0.0);
-        self.data.hunger = (self.data.hunger - 5.0).max(0.0);
-        self.data.thirst = (self.data.thirst - 5.0).max(0.0);
+    }
+
+    /// 工作期间的属性消耗 (每秒调用, 按工作强度扣除)
+    /// work_intensity: 0.0~1.0, 对应不同工作类型的消耗倍率
+    pub fn work_consume(&mut self, dt: f64, work_intensity: f64) {
+        self.data.energy = (self.data.energy - 0.05 * work_intensity * dt).max(0.0);
+        self.data.hunger = (self.data.hunger - 0.015 * work_intensity * dt).max(0.0);
+        self.data.thirst = (self.data.thirst - 0.015 * work_intensity * dt).max(0.0);
     }
 
     /// 获取当前心情 (用于选择动画模式)

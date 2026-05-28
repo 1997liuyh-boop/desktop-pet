@@ -122,6 +122,12 @@ pub fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+/// 切换窗口点击穿透 (透明区域鼠标事件透传到下层窗口)
+#[tauri::command]
+pub fn set_clickthrough(window: tauri::WebviewWindow, enabled: bool) -> Result<(), String> {
+    window.set_ignore_cursor_events(enabled).map_err(|e| e.to_string())
+}
+
 // ── 存档相关 ──
 
 fn data_dir() -> PathBuf {
@@ -315,12 +321,13 @@ pub fn pet_action_feed(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_j
 
     stats.feed(25.0);
     core.current_graph_type = "eat".into();
-    core.set_action_lock(4.0);
+    core.set_action_lock(3.0);
 
     Ok(serde_json::json!({
         "graphType": "eat",
-        "mood": "normal",
+        "mood": stats.get_mood(),
         "message": format!("饱腹度 +25 (当前: {:.0})", stats.data.hunger),
+        "showBubble": "正在吃饭... 饱腹 +25",
         "stats": {
             "hunger": stats.data.hunger,
             "happiness": stats.data.happiness,
@@ -336,12 +343,13 @@ pub fn pet_action_drink(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_
 
     stats.drink(25.0);
     core.current_graph_type = "drink".into();
-    core.set_action_lock(4.0);
+    core.set_action_lock(3.0);
 
     Ok(serde_json::json!({
         "graphType": "drink",
-        "mood": "normal",
+        "mood": stats.get_mood(),
         "message": format!("口渴度 +25 (当前: {:.0})", stats.data.thirst),
+        "showBubble": "咕噜咕噜... 口渴 +25",
         "stats": {
             "thirst": stats.data.thirst,
             "happiness": stats.data.happiness,
@@ -349,24 +357,55 @@ pub fn pet_action_drink(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_
     }))
 }
 
-/// 玩耍
+/// 玩耍 — VPet 中对应 ActivityType::Play, 使用工作动画
 #[tauri::command]
 pub fn pet_action_play(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| e.to_string())?;
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+    let mut work = state.work.lock().map_err(|e| e.to_string())?;
 
     stats.play();
-    core.current_graph_type = "default".into();
+    // 启动 Play 类型工作 (无金钱收益, 120s, 使用 work 动画)
+    work.start(crate::systems::work::ActivityType::Play);
+    core.current_graph_type = "work".into();
+    core.set_action_lock(work.duration + 10.0);
+    core.set_state(PetState::Idle);
 
     Ok(serde_json::json!({
-        "graphType": "default",
+        "graphType": "work",
         "mood": stats.get_mood(),
         "message": format!("心情 +15 (当前: {:.0})", stats.data.happiness),
+        "workStarted": true,
+        "duration": work.duration,
         "stats": {
             "happiness": stats.data.happiness,
             "energy": stats.data.energy,
         }
     }))
+}
+
+/// 睡觉 (手动切换)
+#[tauri::command]
+pub fn pet_action_sleep(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let mut core = state.core.lock().map_err(|e| e.to_string())?;
+    let mut work = state.work.lock().map_err(|e| e.to_string())?;
+
+    // 工作中不能睡觉
+    if work.is_active {
+        return Ok(serde_json::json!({ "sleepToggled": false, "message": "工作中不能睡觉哦" }));
+    }
+
+    // 切换睡眠状态
+    if core.state == PetState::Sleep {
+        core.set_state(PetState::Idle);
+        core.current_graph_type = "default".into();
+        Ok(serde_json::json!({ "sleepToggled": true, "isSleeping": false, "graphType": "default" }))
+    } else {
+        core.set_state(PetState::Sleep);
+        core.current_graph_type = "sleep".into();
+        core.set_action_lock(3.0);
+        Ok(serde_json::json!({ "sleepToggled": true, "isSleeping": true, "graphType": "sleep" }))
+    }
 }
 
 /// 捏合交互 (Pinch)
@@ -377,7 +416,8 @@ pub fn pet_action_pinch(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_
 
     stats.data.happiness = (stats.data.happiness - 5.0).max(0.0);
     core.current_graph_type = "pinch".into();
-    core.set_action_lock(3.0);
+    // pinch 动画: a_start(0.125s) + b_loop(~0.75s×3) + c_end(~0.875s) ≈ 4s
+    core.set_action_lock(5.0);
 
     Ok(serde_json::json!({
         "graphType": "pinch",
@@ -404,7 +444,9 @@ pub fn pet_action_work(
     work.start(at);
     let mut core = state.core.lock().map_err(|e| e.to_string())?;
     core.current_graph_type = "work".into();
+    // 工作期间由 game_tick 维持 "work" 动画; action_lock 只保护初始几秒不被 walk 打断
     core.set_action_lock(5.0);
+    core.set_state(PetState::Idle);
     Ok(serde_json::json!({
         "workStarted": true,
         "graphType": "work",
@@ -441,8 +483,21 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
     // 递减动作锁
     core.tick_action_lock(dt_seconds);
 
-    // 根据 stats 条件触发睡眠/生病状态 (仅在无手动动作锁时)
-    if core.action_lock_remaining <= 0.0 {
+    // 工作期间属性消耗
+    if work.is_active {
+        let intensity = work.intensity();
+        stats.work_consume(dt_seconds, intensity);
+    }
+
+    // 检查工作状态: 健康过低或精力耗尽时停止工作
+    if work.is_active && (stats.data.health < 10.0 || stats.data.energy <= 0.0) {
+        work.stop();
+        core.set_action_lock(0.0);
+        core.set_state(PetState::Sleep);
+    }
+
+    // 根据 stats 条件触发睡眠/生病状态 (仅在无手动动作锁且未工作时)
+    if core.action_lock_remaining <= 0.0 && !work.is_active {
         if stats.data.energy < 15.0 || stats.data.health < 20.0 {
             core.set_state(PetState::Sleep);
         } else if stats.data.health >= 25.0 && stats.data.energy >= 30.0 && core.state == PetState::Sleep {
@@ -453,7 +508,7 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
     // 工作计时
     let work_result = work.update(dt_seconds);
 
-    // 应用工作收益
+    // 应用工作收益 (仅金币+经验, 属性消耗已由 work_consume 处理)
     if let Some(ref wr) = work_result {
         if wr.reward > 0.0 || wr.exp > 0 {
             stats.work(wr.reward, wr.exp);
@@ -463,9 +518,13 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
     // 检查升级
     let leveled_up = stats.check_level_up();
 
-    // 更新 graph type
+    // 更新 graph type (工作期间保持 work)
     core.mood = stats.get_mood().to_string();
-    core.update_graph_type();
+    if work.is_active {
+        core.current_graph_type = "work".into();
+    } else {
+        core.update_graph_type();
+    }
     let graph_type = core.current_graph_type.clone();
 
     // 自动存档
@@ -506,9 +565,10 @@ pub fn walk_tick(
     let mut core = state.core.lock().map_err(|e| e.to_string())?;
     let mut walk = state.walk.lock().map_err(|e| e.to_string())?;
     let controller = state.controller.lock().map_err(|e| e.to_string())?;
+    let work = state.work.lock().map_err(|e| e.to_string())?;
 
-    // 如果正在被拖拽，跳过自主行走
-    if core.is_dragging {
+    // 如果正在被拖拽或工作中，跳过自主行走
+    if core.is_dragging || work.is_active {
         return Ok(serde_json::json!({ "dx": 0, "dy": 0, "facingRight": core.facing_right, "graphType": core.current_graph_type }));
     }
 
@@ -531,6 +591,19 @@ pub fn walk_tick(
         "graphType": graph_type,
         "walking": walk.state == crate::systems::walk::WalkState::Walking,
     }))
+}
+
+/// 打开设置窗口 (预配置窗口, 居中, 可拖动)
+#[tauri::command]
+pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    Err("Settings window not found".into())
 }
 
 /// SideHide 边缘隐藏检测 + 弹出
