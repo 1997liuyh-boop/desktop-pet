@@ -42,10 +42,10 @@ function createPetWindow() {
   const { width: screenWidth, height: screenHeight } = screen.getPrimaryDisplay().workAreaSize;
 
   petWindow = new BrowserWindow({
-    width: 200,
-    height: 250,
-    x: screenWidth - 250,
-    y: screenHeight - 350,
+    width: 350,
+    height: 400,
+    x: screenWidth - 400,
+    y: screenHeight - 500,
     transparent: true,
     frame: false,
     alwaysOnTop: true,
@@ -407,6 +407,35 @@ ipcMain.on('show-context-menu', (event) => {
   ]);
 
   menu.popup({ window: petWindow });
+});
+
+// ==== Asset Loading ====
+
+ipcMain.on('get-app-path', (event) => {
+  event.returnValue = app.getAppPath();
+});
+
+ipcMain.on('read-asset-file', (event, relativePath) => {
+  try {
+    const fullPath = path.join(app.getAppPath(), relativePath);
+    const content = fs.readFileSync(fullPath, 'utf-8');
+    event.returnValue = content;
+  } catch (e) {
+    event.returnValue = null;
+  }
+});
+
+// 读取 VPet PNG 帧（返回 base64）
+ipcMain.on('read-png-frame', (event, framePath) => {
+  try {
+    // framePath 是相对于 VPet vup 目录的路径，如 "Default/Nomal/1/_000_125.png"
+    const vpetBase = 'D:/demo3/VPet/VPet-Simulator.Windows/mod/0000_core/pet/vup/';
+    const fullPath = path.join(vpetBase, framePath);
+    const buffer = fs.readFileSync(fullPath);
+    event.returnValue = buffer.toString('base64');
+  } catch (e) {
+    event.returnValue = null;
+  }
 });
 
 // ==== App lifecycle ====

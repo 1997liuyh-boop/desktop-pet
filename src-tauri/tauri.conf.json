@@ -1,0 +1,41 @@
+{
+  "productName": "Desktop Pet",
+  "version": "0.1.0",
+  "identifier": "com.desktop-pet.app",
+  "build": {
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "pet",
+        "title": "Desktop Pet",
+        "width": 500,
+        "height": 500,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": true,
+        "center": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

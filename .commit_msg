@@ -1,0 +1,13 @@
+fix: 修复4个交互Bug + 新增SideHide/捏合/多工种/好感度
+
+Bug修复:
+- 喝水后消失: GameCore新增action_lock_remaining, update_graph_type受锁保护
+- 走路动画样式错误: manifest中move按心情正确映射 happy→faster/normal→walk.right/poorCondition→slow
+- 频繁切换睡觉/生病: 闲置时长延长至15-30s, game_tick根据体力触发睡眠
+- 点击总是抓取: window级mousedown兜底, mouseup异常值保护, 长按阈值800→300ms
+
+新功能:
+- SideHide边缘隐藏: Controller检测屏幕边缘, 超过70%出屏自动隐藏, 鼠标靠近弹出
+- 捏合交互: pinch动画, 心情-5
+- 多工种工作系统: Work/Study/Clean/Painting/Play 5种类型
+- 好感度系统: likability隐藏属性, 被动衰减, 受互动影响

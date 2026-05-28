@@ -42,4 +42,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Stats persistence
   saveStats: (stats) => ipcRenderer.send('save-stats', { stats }),
   loadStats: () => ipcRenderer.sendSync('load-stats'),
+
+  // App path for asset loading
+  getAppPath: () => ipcRenderer.sendSync('get-app-path'),
+  readAssetFile: (relativePath) => ipcRenderer.sendSync('read-asset-file', relativePath),
+  readPngFrame: (framePath) => ipcRenderer.sendSync('read-png-frame', framePath),
 });

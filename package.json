@@ -1,13 +1,21 @@
 {
   "name": "desktop-pet",
   "version": "1.0.0",
-  "description": "桌面宠物系统 - Desktop Pet System",
-  "main": "main.js",
+  "description": "桌面宠物系统 - VPet 1:1 复刻, Rust + Tauri v2",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron . --dev"
+    "dev:frontend": "npx http-server dist -p 1420 -c-1 --cors",
+    "build:frontend": "echo \"static dist, no build step needed\"",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "scan-assets": "node scripts/scan-assets.js",
+    "electron:start": "electron .",
+    "electron:dev": "electron . --dev"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
   },
   "dependencies": {
-    "electron": "^28.0.0"
+    "@tauri-apps/api": "^2"
   }
 }

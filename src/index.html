@@ -9,7 +9,7 @@
 <body>
 <div id="app-root">
   <div id="pet-container">
-    <canvas id="pet-canvas" width="200" height="250"></canvas>
+    <canvas id="pet-canvas" width="350" height="400"></canvas>
     <div id="status-bar">
       <div class="status-item">
         <span class="status-label">🍖</span>
@@ -21,22 +21,37 @@
       </div>
     </div>
   </div>
-  <!-- Chat panel, toolbar, settings injected by JS -->
 </div>
 
-<script src="constants.js"></script>
-<script src="utils.js"></script>
-<script src="stats.js"></script>
-<script src="speech.js"></script>
-<script src="persona.js"></script>
-<script src="llm-client.js"></script>
-<script src="chat-ui.js"></script>
-<script src="toolbar.js"></script>
-<script src="side-hide.js"></script>
-<script src="work-system.js"></script>
-<script src="settings-panel.js"></script>
-<script src="pet.js"></script>
-<script src="renderer.js"></script>
+<!-- Types -->
+<script src="animation/anim-types.js"></script>
+<!-- Utils -->
+<script src="utils/constants.js"></script>
+<script src="utils/helpers.js"></script>
+<!-- Animation (real PNG frames) -->
+<script src="animation/png-loader.js"></script>
+<script src="animation/graph-core.js"></script>
+<!-- Display -->
+<script src="display/message-bar.js"></script>
+<script src="display/effects.js"></script>
+<script src="display/renderer.js"></script>
+<!-- Core -->
+<script src="core/controller.js"></script>
+<script src="core/game-core.js"></script>
+<!-- Pet -->
+<script src="pet/pet-logic.js"></script>
+<!-- Systems -->
+<script src="systems/stats.js"></script>
+<script src="systems/work.js"></script>
+<!-- AI -->
+<script src="ai/persona.js"></script>
+<script src="ai/llm-client.js"></script>
+<script src="ai/chat-ui.js"></script>
+<script src="ai/ai-settings.js"></script>
+<!-- UI -->
+<script src="ui/toolbar.js"></script>
+<script src="ui/side-hide.js"></script>
+<!-- App -->
 <script src="app.js"></script>
 </body>
 </html>

@@ -10,18 +10,18 @@ html, body {
 
 /* === App Root === */
 #app-root {
-  width: 200px; height: 250px;
+  width: 350px; height: 400px;
   position: relative;
   overflow: hidden;
   transition: width 0.3s ease;
 }
 #app-root.chat-open {
-  width: 400px;
+  width: 600px;
 }
 
 /* === Pet Container === */
 #pet-container {
-  width: 200px; height: 250px;
+  width: 350px; height: 400px;
   position: absolute;
   top: 0; left: 0;
 }
@@ -29,7 +29,7 @@ html, body {
 #pet-canvas {
   position: absolute;
   top: 0; left: 0;
-  width: 200px; height: 250px;
+  width: 350px; height: 400px;
   cursor: grab;
 }
 #pet-canvas:active, #pet-canvas.dragging { cursor: grabbing; }
@@ -59,13 +59,14 @@ html, body {
 #chat-panel {
   position: absolute;
   top: 0; right: 0;
-  width: 200px; height: 100%;
+  width: 250px; height: 100%;
   background: rgba(255,255,255,0.96);
   border-left: 1px solid rgba(0,0,0,0.08);
   display: flex; flex-direction: column;
   transform: translateX(100%);
   transition: transform 0.3s ease;
   z-index: 50;
+  font-family: "Microsoft YaHei", sans-serif;
 }
 #chat-panel.visible { transform: translateX(0); }
 #chat-panel.hidden { display: none; }
@@ -197,24 +198,46 @@ html, body {
 
 #settings-panel {
   background: white; border-radius: 12px;
-  padding: 16px; width: 280px; max-height: 90%;
+  padding: 16px; width: 300px; max-height: 90%;
   overflow-y: auto; font-size: 12px;
+  font-family: "Microsoft YaHei", sans-serif;
 }
-.settings-header {
-  display: flex; justify-content: space-between; align-items: center;
+
+/* === Settings Tabs === */
+.settings-tabs {
+  display: flex; gap: 4px;
   margin-bottom: 12px;
+  border-bottom: 1px solid rgba(0,0,0,0.08);
+  padding-bottom: 8px;
 }
-.settings-header h3 { font-size: 16px; }
-#settings-close-btn {
-  background: none; border: none; font-size: 20px;
-  cursor: pointer; color: #999;
+.settings-tab {
+  flex: 1; padding: 6px 8px;
+  border: none; background: transparent;
+  font-size: 12px; cursor: pointer;
+  border-radius: 6px;
+  color: #666;
+  transition: all 0.2s;
+  font-family: "Microsoft YaHei", sans-serif;
 }
+.settings-tab.active {
+  background: #fff3e0;
+  color: #ff9800;
+  font-weight: bold;
+}
+.settings-tab:hover { background: rgba(0,0,0,0.03); }
+
+.settings-tab-content { display: none; }
+.settings-tab-content.active { display: block; }
+
 .settings-section {
   margin-bottom: 12px;
   padding-bottom: 12px;
   border-bottom: 1px solid rgba(0,0,0,0.06);
 }
-.settings-section h4 { font-size: 13px; margin-bottom: 6px; color: #ff9800; }
+.settings-section:last-child { border-bottom: none; }
+.settings-section h4 {
+  font-size: 13px; margin-bottom: 6px; color: #ff9800;
+}
 .settings-section label {
   display: block; font-size: 11px; color: #666; margin-top: 4px;
 }
@@ -234,17 +257,46 @@ html, body {
 .api-key-row { display: flex; gap: 4px; }
 .api-key-row input { flex: 1; }
 .api-key-row button { padding: 2px 6px; background: none; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; }
+
+/* === Tone Preset Cards === */
+.tone-preset-list {
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 250px; overflow-y: auto;
+}
+.tone-preset-card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px;
+  border: 2px solid rgba(0,0,0,0.08);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.tone-preset-card:hover {
+  border-color: #ffcc80;
+  background: #fff8e1;
+}
+.tone-preset-card.active {
+  border-color: #ff9800;
+  background: #fff3e0;
+}
+.tone-preset-icon { font-size: 24px; flex-shrink: 0; }
+.tone-preset-info { display: flex; flex-direction: column; }
+.tone-preset-name { font-size: 13px; font-weight: bold; }
+.tone-preset-desc { font-size: 11px; color: #888; }
+
 .toggle-label { display: flex !important; align-items: center; gap: 6px; cursor: pointer; }
 .toggle-label input { margin: 0; }
-.settings-buttons { display: flex; gap: 8px; justify-content: flex-end; }
+.settings-buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 .btn-primary {
   padding: 6px 16px; background: #ff9800; color: white;
   border: none; border-radius: 6px; cursor: pointer; font-size: 12px;
+  font-family: "Microsoft YaHei", sans-serif;
 }
 .btn-primary:hover { background: #f57c00; }
 .btn-secondary {
   padding: 6px 16px; background: #eee; color: #333;
   border: none; border-radius: 6px; cursor: pointer; font-size: 12px;
+  font-family: "Microsoft YaHei", sans-serif;
 }
 #set-test-result { font-size: 11px; margin-left: 8px; }
-.settings-section small { color: #999; font-size: 10px; }
+.settings-section small { color: #999; font-size: 10px; display: block; margin-top: 4px; }
