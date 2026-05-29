@@ -35,6 +35,20 @@
         "resizable": true,
         "visible": false,
         "center": true
+      },
+      {
+        "label": "chat",
+        "title": "聊天",
+        "width": 360,
+        "height": 520,
+        "url": "chat.html",
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "resizable": true,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {

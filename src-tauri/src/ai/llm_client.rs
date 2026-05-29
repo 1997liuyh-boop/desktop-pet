@@ -21,6 +21,9 @@ pub struct LLMConfig {
     /// 当前选择的人设名称
     #[serde(default)]
     pub persona: Option<String>,
+    /// 宠物名字 (可在设置中自定义)
+    #[serde(default = "default_pet_name")]
+    pub pet_name: String,
 }
 
 fn default_endpoint() -> String { "https://api.openai.com/v1/chat/completions".into() }
@@ -28,6 +31,7 @@ fn default_model() -> String { "gpt-3.5-turbo".into() }
 fn default_temperature() -> f64 { 0.8 }
 fn default_max_tokens() -> u32 { 1024 }
 fn default_protocol() -> String { "openai".into() }
+fn default_pet_name() -> String { "喵喵".into() }
 
 impl Default for LLMConfig {
     fn default() -> Self {
@@ -39,6 +43,7 @@ impl Default for LLMConfig {
             max_tokens: default_max_tokens(),
             protocol: default_protocol(),
             persona: None,
+            pet_name: default_pet_name(),
         }
     }
 }

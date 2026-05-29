@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>和小橘聊天</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background: #fff;
+      font-family: "Microsoft YaHei", -apple-system, sans-serif;
+      font-size: 13px;
+      color: #333;
+      overflow: hidden;
+    }
+    #chat-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      background: linear-gradient(135deg, #ff9800, #ffb74d);
+      color: #fff;
+      font-size: 14px;
+      font-weight: bold;
+      flex-shrink: 0;
+    }
+    #chat-header .avatar { font-size: 22px; }
+    #chat-header .subtitle { font-size: 11px; font-weight: normal; opacity: 0.85; }
+    #chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: #fafafa;
+    }
+    .msg-row {
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+    }
+    .msg-row.user { flex-direction: row-reverse; }
+    .bubble {
+      max-width: 75%;
+      padding: 8px 12px;
+      border-radius: 14px;
+      font-size: 13px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+    .bubble.user {
+      background: #e3f2fd;
+      color: #1565c0;
+      border-bottom-right-radius: 4px;
+    }
+    .bubble.pet {
+      background: #fff3e0;
+      color: #e65100;
+      border-bottom-left-radius: 4px;
+    }
+    .avatar-ico { font-size: 22px; flex-shrink: 0; }
+    #thinking {
+      display: none;
+      padding: 4px 14px;
+      font-size: 11px;
+      color: #999;
+      font-style: italic;
+    }
+    #thinking.active { display: block; }
+    #input-row {
+      display: flex;
+      padding: 10px 12px;
+      gap: 8px;
+      border-top: 1px solid rgba(0,0,0,0.06);
+      background: #fff;
+      flex-shrink: 0;
+    }
+    #msg-input {
+      flex: 1;
+      padding: 8px 12px;
+      border: 1px solid rgba(0,0,0,0.12);
+      border-radius: 20px;
+      font-size: 13px;
+      font-family: "Microsoft YaHei", sans-serif;
+      outline: none;
+    }
+    #msg-input:focus { border-color: #ff9800; }
+    #send-btn {
+      padding: 8px 18px;
+      background: linear-gradient(135deg, #ff9800, #ffb74d);
+      color: #fff;
+      border: none;
+      border-radius: 20px;
+      font-size: 13px;
+      font-family: "Microsoft YaHei", sans-serif;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    #send-btn:hover { background: linear-gradient(135deg, #f57c00, #ffa726); }
+    #send-btn:disabled { opacity: 0.5; cursor: default; }
+    #status-bar {
+      padding: 4px 12px;
+      font-size: 11px;
+      color: #999;
+      background: #f5f5f5;
+      border-top: 1px solid rgba(0,0,0,0.04);
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="chat-header">
+    <span class="avatar">🐱</span>
+    <div>
+      <div id="chat-title">聊天</div>
+      <div class="subtitle">AI 驱动的桌宠对话</div>
+    </div>
+  </div>
+  <div id="chat-messages"></div>
+  <div id="thinking"><span id="thinking-name">喵喵</span>正在思考<span id="dots">...</span></div>
+  <div id="input-row">
+    <input id="msg-input" type="text" placeholder="说点什么..." autocomplete="off" />
+    <button id="send-btn">发送</button>
+  </div>
+  <div id="status-bar" id="status">就绪</div>
+
+  <script>
+    const { invoke } = window.__TAURI__.core;
+    const msgs = document.getElementById('chat-messages');
+    const input = document.getElementById('msg-input');
+    const sendBtn = document.getElementById('send-btn');
+    const thinking = document.getElementById('thinking');
+    const status = document.getElementById('status-bar');
+
+    let history = [];
+    let isSending = false;
+    let petName = '喵喵';
+
+    // 初始化: 读取配置中的宠物名字, 应用到标题/欢迎语/思考提示
+    async function initChat() {
+      try {
+        const config = await invoke('load_llm_config', {});
+        if (config && config.pet_name) petName = config.pet_name;
+      } catch (_) { /* 使用默认名 */ }
+      document.title = `和${petName}聊天`;
+      // 同步原生窗口标题栏
+      try { await window.__TAURI__.window.getCurrent().setTitle(`和${petName}聊天`); } catch (_) {}
+      document.getElementById('chat-title').textContent = `和${petName}聊天`;
+      document.getElementById('thinking-name').textContent = petName;
+      addBubble('pet', `喵~ 你好！有什么想和${petName}说的吗？(◕ᴥ◕)`);
+      status.textContent = '就绪';
+    }
+
+    function addBubble(role, text) {
+      const row = document.createElement('div');
+      row.className = 'msg-row ' + (role === 'user' ? 'user' : '');
+      const avatarIco = document.createElement('span');
+      avatarIco.className = 'avatar-ico';
+      avatarIco.textContent = role === 'user' ? '🧑' : '🐱';
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble ' + (role === 'user' ? 'user' : 'pet');
+      bubble.textContent = text;
+      if (role === 'user') {
+        row.appendChild(bubble);
+        row.appendChild(avatarIco);
+      } else {
+        row.appendChild(avatarIco);
+        row.appendChild(bubble);
+      }
+      msgs.appendChild(row);
+      msgs.scrollTop = msgs.scrollHeight;
+      return bubble;
+    }
+
+    async function send() {
+      const msg = input.value.trim();
+      if (!msg || isSending) return;
+      input.value = '';
+      isSending = true;
+      sendBtn.disabled = true;
+      thinking.classList.add('active');
+
+      addBubble('user', msg);
+      const replyBubble = addBubble('pet', '...');
+
+      try {
+        const config = await invoke('load_llm_config', {});
+        if (!config.api_key) {
+          replyBubble.textContent = '请先在设置中配置 API Key';
+          status.textContent = '未配置 API Key';
+          isSending = false; sendBtn.disabled = false; thinking.classList.remove('active');
+          return;
+        }
+
+        const petStatus = await invoke('get_pet_status', {});
+        const basePrompt = await invoke('build_persona_prompt', {
+          customPrompt: null,
+          mood: petStatus.mood || 'normal',
+          hunger: petStatus.stats.hunger,
+          happiness: petStatus.stats.happiness,
+          isWorking: false,
+        });
+        // 把宠物名字注入系统提示词, 让 AI 以该名字自称
+        const prompt = `你的名字叫「${petName}」。\n${basePrompt}`;
+
+        let fullText = '';
+        // 必须先 await 注册监听器, 否则流式事件会早于监听器注册而丢失 (导致"没有回复")
+        const unlistenChunk = await window.__TAURI__.event.listen('llm-stream-chunk', (e) => {
+          fullText += e.payload;
+          replyBubble.textContent = fullText;
+          msgs.scrollTop = msgs.scrollHeight;
+        });
+        const unlistenDone = await window.__TAURI__.event.listen('llm-stream-done', (e) => {
+          const final = e.payload || fullText;
+          replyBubble.textContent = final;
+          isSending = false;
+          sendBtn.disabled = false;
+          thinking.classList.remove('active');
+          status.textContent = '已回复';
+          // 通知主窗口在宠物气泡中显示回复
+          if (final) window.__TAURI__.event.emit('chat-reply', final).catch(() => {});
+        });
+
+        const newHistory = await invoke('chat_stream', {
+          message: msg,
+          config,
+          systemPrompt: prompt,
+          history,
+        });
+        history = newHistory;
+
+        setTimeout(() => {
+          unlistenChunk();
+          unlistenDone();
+        }, 500);
+      } catch (e) {
+        const errMsg = typeof e === 'string' ? e : (e?.message || JSON.stringify(e) || '未知错误');
+        replyBubble.textContent = '请求失败: ' + errMsg;
+        status.textContent = '错误: ' + errMsg;
+        isSending = false;
+        sendBtn.disabled = false;
+        thinking.classList.remove('active');
+      }
+    }
+
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+
+    // 欢迎消息 (名字来自配置)
+    initChat();
+  </script>
+</body>
+</html>

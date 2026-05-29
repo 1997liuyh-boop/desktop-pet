@@ -37,6 +37,9 @@ pub struct GameCore {
 
     // 手动动作锁 (喝水/喂食等的剩余时间, 秒)
     pub action_lock_remaining: f64,
+
+    // 是否因生病自动卧床 (区别于手动睡觉, 仅生病卧床会在康复后自动唤醒)
+    pub ill_sleep: bool,
 }
 
 impl GameCore {
@@ -55,6 +58,7 @@ impl GameCore {
             idle_timer: 0.0,
             facing_right: true,
             action_lock_remaining: 0.0,
+            ill_sleep: false,
         }
     }
 

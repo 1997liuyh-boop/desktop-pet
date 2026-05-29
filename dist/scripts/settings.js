@@ -9,6 +9,7 @@ async function loadConfig() {
     document.getElementById('model').value = config.model || '';
     document.getElementById('temperature').value = String(config.temperature || 0.8);
     document.getElementById('protocol').value = config.protocol || 'openai';
+    document.getElementById('petName').value = config.pet_name || '';
 
     const presets = await invoke('get_persona_presets', {});
     const personaSelect = document.getElementById('persona');
@@ -39,6 +40,7 @@ async function saveConfig() {
       max_tokens: 1024,
       protocol: document.getElementById('protocol').value,
       persona: document.getElementById('persona').value,
+      pet_name: document.getElementById('petName').value.trim() || '喵喵',
     };
     await invoke('save_llm_config', { config });
     showStatus('已保存');
@@ -56,7 +58,7 @@ function showStatus(msg, isError) {
 
 document.getElementById('btn-save').addEventListener('click', saveConfig);
 document.getElementById('btn-close').addEventListener('click', () => {
-  window.__TAURI__.window.getCurrent().close();
+  window.__TAURI__.window.getCurrent().hide();
 });
 
 // 键盘快捷键: Ctrl+S 保存, Escape 关闭
@@ -66,7 +68,7 @@ document.addEventListener('keydown', (e) => {
     saveConfig();
   }
   if (e.key === 'Escape') {
-    window.__TAURI__.window.getCurrent().close();
+    window.__TAURI__.window.getCurrent().hide();
   }
 });
 
