@@ -24,13 +24,13 @@ class WorkSystem {
     return true;
   }
 
-  stop() {
+  stop(options = {}) {
     const wasActive = !!this.currentActivity;
     this.currentActivity = null;
     this.elapsed = 0;
     this.isPaused = false;
     this.petLogic.stopWork();
-    if (wasActive) this.petLogic.say('不干了喵~');
+    if (wasActive && !options.silent) this.petLogic.say('不干了喵~');
     if (this.onComplete) this.onComplete(null);
   }
 

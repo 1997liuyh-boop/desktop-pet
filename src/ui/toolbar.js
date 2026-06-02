@@ -30,6 +30,9 @@ class Toolbar {
     actionsEl.innerHTML = `
       <button class="tb-btn" data-action="feed">🍖 喂食</button>
       <button class="tb-btn" data-action="play">⚽ 玩耍</button>
+      <button class="tb-btn" data-action="pinch">🤏 捏脸</button>
+      <button class="tb-btn" data-action="dance">♪ 跳舞</button>
+      <button class="tb-btn" data-action="mischief">! 捣蛋</button>
       <button class="tb-btn" data-action="work">💼 工作</button>
       <button class="tb-btn" data-action="chat">💬 聊天</button>
       <button class="tb-btn" data-action="settings">⚙️ 设置</button>
@@ -40,6 +43,12 @@ class Toolbar {
   }
 
   _setupEvents() {
+    ['mousedown', 'mouseup', 'mousemove', 'click', 'contextmenu'].forEach((type) => {
+      this.el.addEventListener(type, (e) => {
+        e.stopPropagation();
+      });
+    });
+
     this.el.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-action]');
       if (!btn) return;
@@ -67,6 +76,10 @@ class Toolbar {
   toggle(x, y) {
     if (this.isVisible) this.hide();
     else this.show(x, y);
+  }
+
+  isEventInside(e) {
+    return !!(e && e.target && this.el.contains(e.target));
   }
 
   refreshStats() {

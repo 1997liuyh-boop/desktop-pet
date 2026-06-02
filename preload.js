@@ -39,6 +39,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setApiKey: (apiKey) => ipcRenderer.send('set-api-key', { apiKey }),
   clearApiKey: () => ipcRenderer.send('clear-api-key'),
 
+  // Lightweight memory
+  loadMemory: () => ipcRenderer.sendSync('load-memory'),
+  saveMemory: (memory) => ipcRenderer.sendSync('save-memory', memory),
+  getMemorySummary: () => ipcRenderer.sendSync('get-memory-summary'),
+  updateMemoryFromChat: (userText, assistantText) => ipcRenderer.sendSync('update-memory-from-chat', { userText, assistantText }),
+
   // Stats persistence
   saveStats: (stats) => ipcRenderer.send('save-stats', { stats }),
   loadStats: () => ipcRenderer.sendSync('load-stats'),

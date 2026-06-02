@@ -128,14 +128,14 @@ class PersonaSystem {
   }
 
   // 构建完整系统提示词
-  buildPrompt(stats, mood, recentEvents) {
+  buildPrompt(stats, mood, recentEvents, memorySummary = '') {
     if (this._customPrompt) {
-      return this._injectContext(this._customPrompt, stats, mood, recentEvents);
+      return this._injectContext(this._customPrompt, stats, mood, recentEvents, memorySummary);
     }
-    return this._buildDefaultPrompt(stats, mood, recentEvents);
+    return this._buildDefaultPrompt(stats, mood, recentEvents, memorySummary);
   }
 
-  _buildDefaultPrompt(stats, mood, recentEvents) {
+  _buildDefaultPrompt(stats, mood, recentEvents, memorySummary = '') {
     const preset = this._tonePresets[this._activePreset];
     const styleGuide = preset ? preset.styleGuide : '';
 
@@ -157,7 +157,7 @@ ${moodGuide}
 
 ## 通用准则
 - 总是用中文回复，说话时带"喵~"尾音
-- 可以使用颜文字表达情绪 (・ω<)✧ (ฅ´ω`ฅ) (=^･ω･^=)
+- 可以使用颜文字表达情绪 (・ω<)✧ (ฅ´ω\`ฅ) (=^･ω･^=)
 - 回复简洁有趣，一般30-80字
 - 会根据时间提醒主人（深夜提醒早睡、中午提醒吃饭）
 - 始终保持可爱、治愈的形象
@@ -165,6 +165,9 @@ ${moodGuide}
 
 ## 当前状态
 {STATS_CONTEXT}
+
+## 记忆摘要
+{MEMORY_CONTEXT}
 
 ## 时间信息
 {TIME_CONTEXT}
@@ -185,9 +188,10 @@ ${moodGuide}
     return guides[mood] || guides[ModeType.NORMAL];
   }
 
-  _injectContext(prompt, stats, mood, recentEvents) {
+  _injectContext(prompt, stats, mood, recentEvents, memorySummary = '') {
     return prompt
       .replace('{STATS_CONTEXT}', this._buildStatsContext(stats, mood))
+      .replace('{MEMORY_CONTEXT}', memorySummary || '（还没有形成稳定记忆）')
       .replace('{TIME_CONTEXT}', this._buildTimeContext())
       .replace('{RECENT_EVENTS}', recentEvents || '（还没有特别的事发生）');
   }

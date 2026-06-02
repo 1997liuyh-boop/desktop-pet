@@ -59,12 +59,19 @@ class DesktopPetApp {
     // AI 模块
     this.llmClient = new LLMClient();
     this.persona = new PersonaSystem();
-    this.chatUI = new ChatUI(this.container, this.core, this.llmClient, this.persona, this.messageBar);
+    this.memory = new PetMemory();
+    this.chatUI = new ChatUI(this.container, this.core, this.llmClient, this.persona, this.messageBar, this.memory);
     this.aiSettings = new AISettings(this.llmClient, this.persona);
 
     this.toolbar = new Toolbar(this.core, {
-      feed: () => this.petLogic.feed(),
+      feed: () => {
+        this.workSystem.stop({ silent: true });
+        this.petLogic.feed();
+      },
       play: () => this.petLogic.play(),
+      pinch: () => this.petLogic.onPinch(),
+      dance: () => this.petLogic.startDance(false),
+      mischief: () => this.petLogic.startMischief(),
       work: () => this.workSystem.start(ActivityType.WORK),
       chat: () => this.chatUI.toggle(),
       settings: () => this.aiSettings.show(),
@@ -123,6 +130,7 @@ class DesktopPetApp {
 
   _setupEventListeners() {
     this.canvas.addEventListener('mousedown', (e) => {
+      if (this.toolbar && this.toolbar.isEventInside && this.toolbar.isEventInside(e)) return;
       if (e.button === 0) {
         const rect = this.canvas.getBoundingClientRect();
         const mx = e.clientX - rect.left;
@@ -175,10 +183,23 @@ class DesktopPetApp {
 
     this.canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
+      e.stopPropagation();
+      this.isPotentialDrag = false;
+      this.hasMoved = false;
+      this.canvas.classList.remove('dragging');
       const rect = this.canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
       this.toolbar.toggle(mx, my);
+    });
+
+    this.canvas.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.isPotentialDrag = false;
+      this.hasMoved = false;
+      this.canvas.classList.remove('dragging');
+      this.petLogic.onPinch();
     });
 
     document.addEventListener('click', (e) => {
@@ -202,6 +223,10 @@ class DesktopPetApp {
       switch (action) {
         case 'feed': this.petLogic.feed(); break;
         case 'play': this.petLogic.play(); break;
+        case 'pinch': this.petLogic.onPinch(); break;
+        case 'dance': this.petLogic.startDance(false); break;
+        case 'strong-dance': this.petLogic.startDance(true); break;
+        case 'mischief': this.petLogic.startMischief(); break;
         case 'sleep': this.petLogic.startSleeping(); break;
         case 'chat': this.chatUI.toggle(); break;
       }
@@ -245,17 +270,23 @@ class DesktopPetApp {
   _playCurrentAnim(dt) {
     const gtype = this.core.currentGraphType;
     const mood = this.core.mood;
+    const desired = this.core.currentAnimatType || AnimatType.B_LOOP;
 
-    // 确保动画已缓存
-    let anim = this.graphCore.findCached(gtype, mood, 'b_loop')
-      || this.graphCore.findCached(gtype, mood, 'single')
-      || this.graphCore.findCached(gtype, 'normal', 'b_loop')
-      || this.graphCore.findCached(gtype, 'normal', 'single');
+    let anim = this.graphCore.findCachedExact(gtype, mood, desired)
+      || this.graphCore.findCachedExact(gtype, ModeType.NORMAL, desired);
+
+    if (!anim && desired !== AnimatType.C_END) {
+      anim = this.graphCore.findCachedExact(gtype, mood, AnimatType.B_LOOP)
+        || this.graphCore.findCachedExact(gtype, mood, AnimatType.SINGLE)
+        || this.graphCore.findCachedExact(gtype, ModeType.NORMAL, AnimatType.B_LOOP)
+        || this.graphCore.findCachedExact(gtype, ModeType.NORMAL, AnimatType.SINGLE);
+    }
 
     if (!anim) return;
 
     if (anim !== this.graphCore.currentAnim) {
       this.graphCore.stop();
+      this.graphCore._currentGraphType = gtype;
       if (anim.isLoop) {
         anim.reset();
         anim._running = true;
@@ -264,10 +295,13 @@ class DesktopPetApp {
         this.graphCore._currentAnim = anim;
         if (this.renderer.onFrame) this.renderer.onFrame(anim.currentFrameImage, 0);
       } else {
+        const completedGraph = gtype;
+        const completedType = anim.animatType;
         anim.reset();
         anim.play(this.renderer.onFrame, () => {
-          if (this.core.state !== PetState.CHAT && this.core.state !== PetState.DRAG) {
-            this.core.currentGraphType = 'default';
+          const handled = this.petLogic.onAnimationComplete(completedGraph, completedType);
+          if (!handled && this.core.state !== PetState.CHAT && this.core.state !== PetState.DRAG) {
+            this.core.resetIdle();
           }
         });
         this.graphCore._currentAnim = anim;

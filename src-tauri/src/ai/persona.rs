@@ -101,6 +101,7 @@ impl PersonaSystem {
         hunger: f64,
         _happiness: f64,
         is_working: bool,
+        memory_summary: Option<&str>,
     ) -> String {
         let base = custom_prefix.unwrap_or(&self.active().system_prompt);
 
@@ -117,10 +118,11 @@ impl PersonaSystem {
 
         let work_note = if is_working { "主人正在工作/学习，你要乖乖的不要打扰。" }
             else { "" };
+        let memory_note = memory_summary.unwrap_or("（还没有形成稳定记忆）");
 
         format!(
-            "{}\n\n[当前状态]\n- 饱腹度: {} ({})\n- 心情: ({})\n- 状态: {}\n\n回复要求: 简短有趣，1-3句话。用口语化中文。不要用markdown。",
-            base, hunger as u32, hunger_desc, mood_desc, work_note
+            "{}\n\n[当前状态]\n- 饱腹度: {} ({})\n- 心情: ({})\n- 状态: {}\n\n[记忆摘要]\n{}\n\n回复要求: 简短有趣，1-3句话。用口语化中文。不要用markdown。",
+            base, hunger as u32, hunger_desc, mood_desc, work_note, memory_note
         )
     }
 }

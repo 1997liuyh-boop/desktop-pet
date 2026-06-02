@@ -74,13 +74,6 @@ pub fn find_work(graph: &str) -> Option<Work> {
     all_works().into_iter().find(|w| w.graph == graph)
 }
 
-/// 工作完成结果
-pub struct WorkFinish {
-    /// 完成奖励 (按类型进入金钱或经验)
-    pub bonus: f64,
-    pub work_type: WorkType,
-}
-
 /// WorkSystem — 当前进行中的工作运行态 (对标 VPet WorkTimer)
 pub struct WorkSystem {
     pub is_active: bool,
@@ -117,26 +110,10 @@ impl WorkSystem {
         self.get_count = 0.0;
     }
 
-    /// 推进计时 (秒); 时间到则返回完成奖励
-    pub fn advance(&mut self, dt: f64) -> Option<WorkFinish> {
-        if !self.is_active {
-            return None;
-        }
-        self.elapsed_secs += dt;
-        let work = self.now_work.as_ref()?;
-        if self.elapsed_secs >= work.duration_secs() {
-            // 完成: 奖励 = GetCount * FinishBonus
-            let finish = WorkFinish {
-                bonus: self.get_count * work.finish_bonus,
-                work_type: work.work_type,
-            };
-            self.is_active = false;
-            self.now_work = None;
-            self.elapsed_secs = 0.0;
-            self.get_count = 0.0;
-            Some(finish)
-        } else {
-            None
+    /// 持续推进运行时间；工作不会因定义时长自动完成。
+    pub fn advance(&mut self, dt: f64) {
+        if self.is_active {
+            self.elapsed_secs += dt;
         }
     }
 

@@ -8,6 +8,19 @@ class PetLogic {
     this.messageBar = messageBar;
     this.effects = effects;
     this.stats = stats;
+
+    this.music = {
+      history: [],
+      active: false,
+      strong: false,
+      confirmSamples: 0,
+      releaseSamples: 0,
+      manualTicks: 0,
+      lastPeak: 0,
+    };
+
+    this.mischiefTimer = this._nextMischiefDelay();
+    this.mischiefNudge = 0;
   }
 
   update() {
@@ -21,24 +34,103 @@ class PetLogic {
 
     this.effects.update();
     this.messageBar.update();
+    this._updateMusicIntent();
 
     switch (core.state) {
-      case PetState.IDLE:   this._updateIdle(); break;
-      case PetState.WALK:   this._updateWalk(); break;
-      case PetState.SIT:    this._updateSit(); break;
-      case PetState.SLEEP:  this._updateSleep(); break;
-      case PetState.HAPPY:  this._updateHappy(); break;
-      case PetState.DRAG:   break;
-      case PetState.EAT:    this._updateEat(); break;
-      case PetState.WORK:   this._updateWork(); break;
-      case PetState.CHAT:   break;
+      case PetState.IDLE:     this._updateIdle(); break;
+      case PetState.WALK:     this._updateWalk(); break;
+      case PetState.SIT:      this._updateSit(); break;
+      case PetState.SLEEP:    this._updateSleep(); break;
+      case PetState.HAPPY:    this._updateHappy(); break;
+      case PetState.DRAG:     break;
+      case PetState.EAT:      this._updateEat(); break;
+      case PetState.WORK:     this._updateWork(); break;
+      case PetState.CHAT:     break;
+      case PetState.MUSIC:    this._updateMusic(); break;
+      case PetState.MISCHIEF: this._updateMischief(); break;
     }
 
     core.proactiveTimer++;
-    if (core.proactiveTimer >= core.proactiveInterval && core.state === PetState.IDLE) {
+    if (core.proactiveTimer >= core.proactiveInterval && core.state === PetState.IDLE && !core.currentAction) {
       core.proactiveTimer = 0;
       core.proactiveInterval = randomInt(PROACTIVE.IDLE_SPEAK_MIN, PROACTIVE.IDLE_SPEAK_MAX);
       this._checkProactiveSpeech();
+    }
+  }
+
+  onAnimationComplete(graphType, animatType) {
+    const action = this.core.currentAction;
+    if (!action || action.graphType !== graphType) return false;
+
+    if (animatType === AnimatType.A_START) {
+      this.core.currentAnimatType = this._nextLoopPhase(action);
+      this.core.animTimer = 0;
+      return true;
+    }
+
+    if (animatType === AnimatType.SINGLE && action.kind === 'music') {
+      if (this.music.active || this.music.manualTicks > 0) {
+        this.core.currentAnimatType = this.music.strong ? AnimatType.SINGLE : AnimatType.B_LOOP;
+      } else {
+        this._requestEndAction(action);
+      }
+      this.core.animTimer = 0;
+      return true;
+    }
+
+    if (animatType === AnimatType.C_END) {
+      this.core.resetIdle();
+      return true;
+    }
+
+    return false;
+  }
+
+  handleAudioPeak(payload) {
+    const rawPeak = typeof payload === 'number' ? payload : payload?.peak;
+    const peak = Number(rawPeak);
+    if (!Number.isFinite(peak)) return;
+
+    if (peak < 0) {
+      this.music.releaseSamples++;
+      if (this.music.releaseSamples >= INTERACTION_CFG.MUSIC_RELEASE_SAMPLES) {
+        this._stopMusicSignal();
+      }
+      return;
+    }
+
+    const normalized = clamp(peak, 0, 1);
+    this.music.lastPeak = normalized;
+    this.music.history.push(normalized);
+    if (this.music.history.length > INTERACTION_CFG.MUSIC_HISTORY) this.music.history.shift();
+
+    const avg = this._average(this.music.history);
+    const isAudible = normalized > INTERACTION_CFG.MUSIC_CATCH || avg > INTERACTION_CFG.MUSIC_CATCH;
+
+    if (isAudible) {
+      this.music.confirmSamples++;
+      this.music.releaseSamples = 0;
+    } else {
+      this.music.confirmSamples = 0;
+      this.music.releaseSamples++;
+    }
+
+    if (!this.music.active && this.music.confirmSamples >= INTERACTION_CFG.MUSIC_CONFIRM_SAMPLES) {
+      this.music.active = true;
+      this.music.strong = avg > INTERACTION_CFG.MUSIC_MAX || normalized > INTERACTION_CFG.MUSIC_MAX;
+      this._startMusicAction(false);
+      return;
+    }
+
+    if (this.music.active) {
+      const wasStrong = this.music.strong;
+      this.music.strong = avg > INTERACTION_CFG.MUSIC_MAX || normalized > INTERACTION_CFG.MUSIC_MAX;
+      if (wasStrong !== this.music.strong && this.core.currentAction?.kind === 'music') {
+        this._syncMusicPhase();
+      }
+      if (this.music.releaseSamples >= INTERACTION_CFG.MUSIC_RELEASE_SAMPLES) {
+        this._stopMusicSignal();
+      }
     }
   }
 
@@ -67,13 +159,28 @@ class PetLogic {
 
   _updateIdle() {
     this.core.idleTimer++;
+    this.mischiefTimer--;
+
+    if (this.music.active && this._canStartIdleAction()) {
+      this._startMusicAction(false);
+      return;
+    }
+
+    if (this.mischiefTimer <= 0 && this._canStartIdleAction()) {
+      this._startMischief();
+      this.mischiefTimer = this._nextMischiefDelay();
+      return;
+    }
+
     if (this.core.idleTimer > this.core.idleDuration) {
       const rand = Math.random();
       const mood = this.core.mood;
       if (this.stats && this.stats.energy < 20 && mood !== ModeType.HAPPY) {
         this.startSleeping();
-      } else if (rand < 0.5) {
+      } else if (rand < 0.45) {
         this.core.startWalking();
+      } else if (rand < 0.65) {
+        this._startMischief();
       } else {
         this.core.resetIdle();
       }
@@ -97,12 +204,11 @@ class PetLogic {
   }
 
   _updateSit() { this.core.idleTimer++; if (this.core.idleTimer > this.core.idleDuration) this.core.resetIdle(); }
-  _updateHappy() { this.core.idleTimer++; if (this.core.idleTimer > this.core.idleDuration) this.core.resetIdle(); }
+  _updateHappy() { this._updateTimedAction(); }
   _updateEat() { this.core.idleTimer++; if (this.core.idleTimer > 60) { if (this.stats) this.stats.feed(20); this.core.resetIdle(); } }
   _updateWork() { this.core.idleTimer++; }
 
   _updateSleep() {
-    const core = this.core;
     if (this.stats) this.stats.sleepRecover();
     if (this.stats && this.stats.energy > 80) this.wakeUp();
     if (Math.random() < 0.03) {
@@ -110,45 +216,82 @@ class PetLogic {
     }
   }
 
+  _updateMusic() {
+    if (this.music.manualTicks > 0) this.music.manualTicks--;
+    if (!this.music.active && this.music.manualTicks <= 0) {
+      this._requestEndAction();
+      return;
+    }
+    this._syncMusicPhase();
+    if (Math.random() < 0.025) this.effects.spawnHearts(250, 220, 1);
+  }
+
+  _updateMischief() {
+    this._updateTimedAction();
+    const action = this.core.currentAction;
+    if (!action || action.kind !== 'mischief' || this.core.currentAnimatType !== AnimatType.B_LOOP) return;
+
+    this.mischiefNudge++;
+    if (this.mischiefNudge % 18 === 0) this._nudgeWindow();
+  }
+
+  _updateTimedAction() {
+    const action = this.core.currentAction;
+    if (!action || this.core.currentAnimatType !== AnimatType.B_LOOP) return;
+
+    action.loopTicks--;
+    if (action.loopTicks <= 0) this._requestEndAction(action);
+  }
+
   startSleeping() {
+    this._stopMusicSignal();
     this.core.state = PetState.SLEEP;
     this.core.currentGraphType = 'sleep';
+    this.core.currentAnimatType = AnimatType.B_LOOP;
+    this.core.currentAction = null;
     this.core.animTimer = 0;
   }
 
   wakeUp() {
     this.core.state = PetState.IDLE;
     this.core.currentGraphType = 'default';
+    this.core.currentAnimatType = AnimatType.B_LOOP;
+    this.core.currentAction = null;
     this.core.animTimer = 0;
-    this.say('睡醒了~');
+    this.messageBar.say('睡醒了~');
     this.core.addEvent('睡醒了');
   }
 
   // === 互动 ===
   onClick(isHead) {
-    const core = this.core;
     if (isHead) {
-      core.currentGraphType = 'touch_head';
-      core.state = PetState.HAPPY;
+      this._startMomentaryAction('touch_head', PetState.HAPPY, 'touch_head', INTERACTION_CFG.TOUCH_LOOP_TICKS);
       if (this.stats) this.stats.pet();
-      core.idleDuration = 40;
-      core.idleTimer = 0;
       this.effects.spawnHearts(250, 220, 3);
-      core.addEvent('被摸头了');
-      if (Math.random() < 0.6) this.say(randomChoice(['喵~', '好舒服~', '再来一次!', '嘻嘻~', '咕噜咕噜~']));
+      this.core.addEvent('被摸头了');
+      if (Math.random() < 0.6) this.messageBar.say(randomChoice(['喵~', '好舒服~', '再来一次!', '嘻嘻~', '咕噜咕噜~']));
     } else {
-      core.currentGraphType = 'touch_body';
-      core.state = PetState.HAPPY;
-      core.idleDuration = 35;
-      core.idleTimer = 0;
-      core.addEvent('被摸身体了');
-      this.say(randomChoice(['喵呜~', '不要摸那里啦!', '好痒喵~']));
+      this._startMomentaryAction('touch_body', PetState.HAPPY, 'touch_body', INTERACTION_CFG.TOUCH_LOOP_TICKS);
+      this.core.addEvent('被摸身体了');
+      this.messageBar.say(randomChoice(['喵呜~', '不要摸那里啦!', '好痒喵~']));
     }
+    this.mischiefTimer = this._nextMischiefDelay();
+  }
+
+  onPinch() {
+    this._startMomentaryAction('pinch', PetState.HAPPY, 'pinch', INTERACTION_CFG.PINCH_LOOP_TICKS);
+    if (this.stats) this.stats.play(6);
+    this.effects.spawnHearts(250, 220, 1);
+    this.core.addEvent('被捏脸了');
+    this.messageBar.say(randomChoice(['脸要被捏圆了喵~', '轻一点啦!', '喵呜，抓到你了~']));
+    this._autoSave();
   }
 
   onDragStart() {
     this.core.state = PetState.DRAG;
     this.core.currentGraphType = 'raise';
+    this.core.currentAnimatType = AnimatType.B_LOOP;
+    this.core.currentAction = null;
     this.core.isDragging = true;
   }
 
@@ -158,28 +301,52 @@ class PetLogic {
   }
 
   feed() {
+    this._stopMusicSignal();
     this.core.state = PetState.EAT;
     this.core.currentGraphType = 'eat';
+    this.core.currentAnimatType = AnimatType.B_LOOP;
+    this.core.currentAction = null;
     this.core.idleDuration = 60;
     this.core.idleTimer = 0;
     if (this.stats) this.stats.feed(20);
     this.core.addEvent('被喂食了');
-    this.say('好吃喵~!');
+    this.messageBar.say('好吃喵~!');
     this._autoSave();
   }
 
   play() {
-    this.core.state = PetState.HAPPY;
-    this.core.currentGraphType = 'idle';
+    if (this._startMischief()) {
+      if (this.stats) this.stats.play(15);
+      this.core.addEvent('玩耍了');
+      this._autoSave();
+      return;
+    }
+    this._startMomentaryAction('idle', PetState.HAPPY, 'play', INTERACTION_CFG.MISCHIEF_LOOP_TICKS);
     if (this.stats) this.stats.play(15);
     this.core.addEvent('玩耍了');
-    this.say('来玩吧!');
+    this.messageBar.say('来玩吧!');
     this._autoSave();
   }
 
+  startDance(strong = false) {
+    this.music.active = true;
+    this.music.strong = !!strong;
+    this.music.manualTicks = strong ? 420 : 300;
+    this.music.confirmSamples = INTERACTION_CFG.MUSIC_CONFIRM_SAMPLES;
+    this.music.releaseSamples = 0;
+    this._startMusicAction(true);
+  }
+
+  startMischief() {
+    this._startMischief(true);
+  }
+
   startWork(activityType) {
+    this._stopMusicSignal();
     this.core.state = PetState.WORK;
     this.core.currentGraphType = 'work';
+    this.core.currentAnimatType = AnimatType.B_LOOP;
+    this.core.currentAction = null;
     this.core.activity = activityType;
   }
 
@@ -191,10 +358,152 @@ class PetLogic {
 
   say(text) {
     this.messageBar.say(text);
-    this.core.currentGraphType = 'say';
+    this._startMomentaryAction('say', PetState.HAPPY, 'say', Math.max(45, text.length * 6));
   }
 
   setWorkProgress(progress) {
     this.core.workProgress = progress;
+  }
+
+  _startMomentaryAction(graphType, state, kind, loopTicks) {
+    const action = this.core.currentAction;
+    if (action?.graphType === graphType && this.core.currentAnimatType !== AnimatType.A_START) {
+      action.loopTicks = Math.max(action.loopTicks, loopTicks);
+      return true;
+    }
+
+    this._stopMusicSignal();
+    this.core.state = state;
+    this.core.currentGraphType = graphType;
+    this.core.currentAnimatType = this._hasAnim(graphType, AnimatType.A_START) ? AnimatType.A_START : AnimatType.B_LOOP;
+    this.core.currentAction = { graphType, kind, loopTicks };
+    this.core.idleTimer = 0;
+    this.core.animTimer = 0;
+    return true;
+  }
+
+  _startMusicAction(manual) {
+    if (!manual && !this._canStartIdleAction() && this.core.state !== PetState.MUSIC) return false;
+    if (!this._hasAnim('music', AnimatType.B_LOOP) && !this._hasAnim('music', AnimatType.SINGLE)) return false;
+
+    const current = this.core.currentAction;
+    if (current?.kind === 'music') {
+      this._syncMusicPhase();
+      return true;
+    }
+
+    this.core.state = PetState.MUSIC;
+    this.core.currentGraphType = 'music';
+    this.core.currentAnimatType = this._hasAnim('music', AnimatType.A_START) ? AnimatType.A_START : this._nextLoopPhase({ kind: 'music' });
+    this.core.currentAction = { graphType: 'music', kind: 'music', loopTicks: Number.POSITIVE_INFINITY };
+    this.core.idleTimer = 0;
+    this.core.animTimer = 0;
+    this.core.addEvent(manual ? '开始跳舞' : '听到音乐开始跳舞');
+    if (!manual && Math.random() < 0.35) this.messageBar.say('音乐响起来了~');
+    return true;
+  }
+
+  _startMischief(force = false) {
+    if (!force && !this._canStartIdleAction()) return false;
+    if (force && this.core.state !== PetState.IDLE && !this.core.currentAction) this.core.resetIdle();
+    if (this.core.currentAction && this.core.currentAction.kind !== 'mischief') return false;
+
+    const candidates = [
+      { graphType: 'idle', message: '嘿嘿~' },
+      { graphType: 'pinch', message: '我来捣个小蛋~' },
+      { graphType: 'touch_body', message: '不要只顾着忙嘛~' },
+    ].filter(item => this._hasAnim(item.graphType, AnimatType.B_LOOP) || this._hasAnim(item.graphType, AnimatType.SINGLE));
+
+    if (!candidates.length) return false;
+    const pick = randomChoice(candidates);
+    this.core.state = PetState.MISCHIEF;
+    this.core.currentGraphType = pick.graphType;
+    this.core.currentAnimatType = this._hasAnim(pick.graphType, AnimatType.A_START) ? AnimatType.A_START : AnimatType.B_LOOP;
+    this.core.currentAction = { graphType: pick.graphType, kind: 'mischief', loopTicks: INTERACTION_CFG.MISCHIEF_LOOP_TICKS };
+    this.core.idleTimer = 0;
+    this.core.animTimer = 0;
+    this.mischiefNudge = 0;
+    this.messageBar.say(pick.message);
+    this.core.addEvent('开始捣蛋');
+    this._nudgeWindow();
+    return true;
+  }
+
+  _updateMusicIntent() {
+    if (this.music.manualTicks > 0 && this.core.state === PetState.IDLE) {
+      this._startMusicAction(true);
+    }
+    if (this.music.active && this.core.state === PetState.IDLE && !this.core.currentAction) {
+      this._startMusicAction(false);
+    }
+  }
+
+  _syncMusicPhase() {
+    const action = this.core.currentAction;
+    if (!action || action.kind !== 'music' || this.core.currentAnimatType === AnimatType.A_START || this.core.currentAnimatType === AnimatType.C_END) return;
+
+    const next = this._nextLoopPhase(action);
+    if (this.core.currentAnimatType !== next) {
+      this.core.currentAnimatType = next;
+      this.core.animTimer = 0;
+    }
+  }
+
+  _nextLoopPhase(action) {
+    if (action?.kind === 'music' && this.music.strong && this._hasAnim('music', AnimatType.SINGLE)) {
+      return AnimatType.SINGLE;
+    }
+    return AnimatType.B_LOOP;
+  }
+
+  _requestEndAction(action = this.core.currentAction) {
+    if (!action) return;
+    if (this.core.currentAnimatType === AnimatType.C_END) return;
+
+    if (this._hasAnim(action.graphType, AnimatType.C_END)) {
+      this.core.currentGraphType = action.graphType;
+      this.core.currentAnimatType = AnimatType.C_END;
+      this.core.animTimer = 0;
+    } else {
+      this.core.resetIdle();
+    }
+  }
+
+  _stopMusicSignal() {
+    this.music.active = false;
+    this.music.strong = false;
+    this.music.confirmSamples = 0;
+    this.music.releaseSamples = 0;
+    this.music.history.length = 0;
+    if (this.core.currentAction?.kind === 'music') this._requestEndAction();
+  }
+
+  _canStartIdleAction() {
+    return this.core.state === PetState.IDLE && !this.core.currentAction && !this.core.isDragging;
+  }
+
+  _hasAnim(graphType, animatType) {
+    const mood = this.core.mood;
+    return !!(
+      this.graphCore.findCachedExact(graphType, mood, animatType) ||
+      this.graphCore.findCachedExact(graphType, ModeType.NORMAL, animatType)
+    );
+  }
+
+  _average(values) {
+    if (!values.length) return 0;
+    return values.reduce((sum, value) => sum + value, 0) / values.length;
+  }
+
+  _nextMischiefDelay() {
+    return randomInt(INTERACTION_CFG.MISCHIEF_MIN, INTERACTION_CFG.MISCHIEF_MAX);
+  }
+
+  _nudgeWindow() {
+    if (!isElectron()) return;
+    const range = INTERACTION_CFG.MISCHIEF_NUDGE_MAX;
+    const dx = randomInt(-range, range);
+    const dy = randomInt(-Math.floor(range / 2), Math.floor(range / 2));
+    this.core.controller.moveWindow(dx, dy);
   }
 }

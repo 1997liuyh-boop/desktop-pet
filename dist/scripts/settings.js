@@ -1,5 +1,5 @@
 // Settings page JS — 运行在独立设置窗口中
-const { invoke } = window.__TAURI__.core;
+const { invoke } = window.PetRuntime;
 
 async function loadConfig() {
   try {
@@ -32,9 +32,10 @@ async function loadConfig() {
 
 async function saveConfig() {
   try {
+    const apiKey = document.getElementById('apiKey').value.trim();
     const config = {
       endpoint: document.getElementById('endpoint').value,
-      api_key: document.getElementById('apiKey').value,
+      api_key: '',
       model: document.getElementById('model').value,
       temperature: parseFloat(document.getElementById('temperature').value || '0.8'),
       max_tokens: 1024,
@@ -43,7 +44,10 @@ async function saveConfig() {
       pet_name: document.getElementById('petName').value.trim() || '喵喵',
     };
     await invoke('save_llm_config', { config });
-    showStatus('已保存');
+    if (apiKey) {
+      await invoke('save_llm_api_key', { apiKey });
+    }
+    showStatus(apiKey ? '已保存配置和 API Key' : '已保存配置');
     setTimeout(() => { showStatus(''); }, 2000);
   } catch (e) {
     showStatus('保存失败: ' + e, true);
@@ -58,7 +62,7 @@ function showStatus(msg, isError) {
 
 document.getElementById('btn-save').addEventListener('click', saveConfig);
 document.getElementById('btn-close').addEventListener('click', () => {
-  window.__TAURI__.window.getCurrent().hide();
+  window.PetRuntime.currentWindow().hide();
 });
 
 // 键盘快捷键: Ctrl+S 保存, Escape 关闭
@@ -68,7 +72,7 @@ document.addEventListener('keydown', (e) => {
     saveConfig();
   }
   if (e.key === 'Escape') {
-    window.__TAURI__.window.getCurrent().hide();
+    window.PetRuntime.currentWindow().hide();
   }
 });
 

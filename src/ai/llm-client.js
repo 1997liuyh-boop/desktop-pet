@@ -10,6 +10,8 @@ class LLMClient {
     this._onComplete = null;
     this._onError = null;
     this._statusListeners = [];
+    this._runtimeApiKey = '';
+    this._apiKeyInfo = { hasApiKey: false, preview: '', secureStorage: 'none' };
 
     this._loadConfig();
     this._setupIPC();
@@ -22,13 +24,27 @@ class LLMClient {
         if (s) {
           this.config.endpoint = s.endpoint || LLM_DEFAULT.endpoint;
           this.config.model = s.model || LLM_DEFAULT.model;
+          this.config.systemPrompt = s.systemPrompt || '';
+          this._apiKeyInfo = {
+            hasApiKey: !!s.hasApiKey,
+            preview: s.apiKeyPreview || '',
+            secureStorage: s.secureStorage || 'unknown',
+          };
         }
       } else {
         const s = loadFromStorage('pet-llm-config');
         if (s) {
           this.config.endpoint = s.endpoint || LLM_DEFAULT.endpoint;
           this.config.model = s.model || LLM_DEFAULT.model;
+          this.config.systemPrompt = s.systemPrompt || '';
         }
+        const meta = loadFromStorage('pet-api-key-meta', null);
+        this._runtimeApiKey = sessionStorage.getItem('pet-api-key-runtime') || '';
+        this._apiKeyInfo = {
+          hasApiKey: !!this._runtimeApiKey,
+          preview: this._runtimeApiKey ? this._maskSecret(this._runtimeApiKey) : (meta?.preview || ''),
+          secureStorage: 'browser-session',
+        };
       }
     } catch (e) { /* use defaults */ }
   }
@@ -78,8 +94,15 @@ class LLMClient {
     }
   }
 
+  _buildMessages(history, message) {
+    const messages = Array.isArray(history) ? history.filter(item => item?.role && item?.content) : [];
+    const last = messages[messages.length - 1];
+    if (last?.role === 'user' && last.content === message) return messages;
+    return [...messages, { role: 'user', content: message }];
+  }
+
   async _chatBrowser(message, history, onChunk, onComplete, onError) {
-    const apiKey = loadFromStorage('pet-api-key', '');
+    const apiKey = this.getRuntimeApiKey();
     if (!apiKey) {
       onError(new Error('请先在设置中配置API Key'));
       return;
@@ -98,7 +121,7 @@ class LLMClient {
         },
         body: JSON.stringify({
           model: this.config.model,
-          messages: [...history, { role: 'user', content: message }],
+          messages: this._buildMessages(history, message),
           stream: true,
         }),
         signal: this.abortController.signal,
@@ -165,17 +188,30 @@ class LLMClient {
   async updateConfig(config) {
     this.config = { ...this.config, ...config };
     if (isElectron() && window.electronAPI.saveSettings) {
-      window.electronAPI.saveSettings(config);
+      window.electronAPI.saveSettings(this.config);
     } else {
-      saveToStorage('pet-llm-config', this.config);
+      const safeConfig = {
+        endpoint: this.config.endpoint,
+        model: this.config.model,
+        systemPrompt: this.config.systemPrompt || '',
+      };
+      saveToStorage('pet-llm-config', safeConfig);
     }
   }
 
   async setApiKey(key) {
     if (isElectron() && window.electronAPI.setApiKey) {
       window.electronAPI.setApiKey(key);
+      this._apiKeyInfo = { hasApiKey: true, preview: this._maskSecret(key), secureStorage: 'desktop' };
     } else {
-      saveToStorage('pet-api-key', key);
+      this._runtimeApiKey = key;
+      sessionStorage.setItem('pet-api-key-runtime', key);
+      saveToStorage('pet-api-key-meta', {
+        hasApiKey: true,
+        preview: this._maskSecret(key),
+        updatedAt: new Date().toISOString(),
+      });
+      this._apiKeyInfo = { hasApiKey: true, preview: this._maskSecret(key), secureStorage: 'browser-session' };
     }
   }
 
@@ -183,16 +219,46 @@ class LLMClient {
     if (isElectron() && window.electronAPI.clearApiKey) {
       window.electronAPI.clearApiKey();
     } else {
+      localStorage.removeItem('pet-api-key-meta');
+      sessionStorage.removeItem('pet-api-key-runtime');
       localStorage.removeItem('pet-api-key');
     }
+    this._runtimeApiKey = '';
+    this._apiKeyInfo = { hasApiKey: false, preview: '', secureStorage: isElectron() ? 'desktop' : 'browser-session' };
   }
 
   hasApiKey() {
-    if (isElectron()) {
+    return this.getApiKeyInfo().hasApiKey;
+  }
+
+  getRuntimeApiKey() {
+    if (this._runtimeApiKey) return this._runtimeApiKey;
+    if (!isElectron()) return sessionStorage.getItem('pet-api-key-runtime') || '';
+    return '';
+  }
+
+  getApiKeyInfo() {
+    if (isElectron() && window.electronAPI.loadSettings) {
       const s = window.electronAPI.loadSettings();
-      return s && s.hasApiKey;
+      return {
+        hasApiKey: !!s?.hasApiKey,
+        preview: s?.apiKeyPreview || '',
+        secureStorage: s?.secureStorage || 'desktop',
+      };
     }
-    return !!loadFromStorage('pet-api-key');
+    const runtimeKey = this.getRuntimeApiKey();
+    const meta = loadFromStorage('pet-api-key-meta', null);
+    return {
+      hasApiKey: !!runtimeKey,
+      preview: runtimeKey ? this._maskSecret(runtimeKey) : (meta?.preview || ''),
+      secureStorage: 'browser-session',
+    };
+  }
+
+  _maskSecret(value) {
+    if (!value) return '';
+    if (value.length <= 8) return '••••';
+    return `${value.slice(0, 4)}••••${value.slice(-4)}`;
   }
 
   // 测试连接

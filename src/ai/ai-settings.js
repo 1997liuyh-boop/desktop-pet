@@ -39,10 +39,13 @@ class AISettings {
         <label>模型名称</label>
         <input type="text" id="set-model" placeholder="gpt-3.5-turbo" />
         <label>API Key</label>
+        <div id="set-apikey-status" class="api-key-status">未设置</div>
         <div class="api-key-row">
-          <input type="password" id="set-apikey" placeholder="sk-..." />
+          <input type="password" id="set-apikey" autocomplete="off" placeholder="输入新 Key 后保存" />
           <button id="set-toggle-apikey" title="显示/隐藏">👁</button>
+          <button id="set-clear-apikey" title="清除 Key">清除</button>
         </div>
+        <small id="set-storage-note">桌面模式会把 API Key 独立保存；浏览器模式只保留脱敏标记，刷新后需要重新输入。</small>
         <button id="set-test-connection" class="btn-secondary">测试连接</button>
         <span id="set-test-result"></span>
       </div>
@@ -59,7 +62,7 @@ class AISettings {
       </div>
       <div class="settings-section">
         <h4>自定义人设提示词</h4>
-        <textarea id="set-system-prompt" rows="6" placeholder="留空则使用预设模板&#10;可用变量：{STATS_CONTEXT}, {TIME_CONTEXT}, {RECENT_EVENTS}"></textarea>
+        <textarea id="set-system-prompt" rows="6" placeholder="留空则使用预设模板&#10;可用变量：{STATS_CONTEXT}, {MEMORY_CONTEXT}, {TIME_CONTEXT}, {RECENT_EVENTS}"></textarea>
         <small>自定义提示词会覆盖所有预设语气，留空则使用预设模板</small>
       </div>
     `;
@@ -151,6 +154,10 @@ class AISettings {
     document.getElementById('set-save-btn').addEventListener('click', () => this.save());
     document.getElementById('set-cancel-btn').addEventListener('click', () => this.hide());
     document.getElementById('set-test-connection').addEventListener('click', () => this.testConnection());
+    document.getElementById('set-clear-apikey').addEventListener('click', async () => {
+      await this.llmClient.clearApiKey();
+      this._refreshApiKeyStatus();
+    });
     document.getElementById('set-toggle-apikey').addEventListener('click', () => {
       const el = document.getElementById('set-apikey');
       el.type = el.type === 'password' ? 'text' : 'password';
@@ -178,14 +185,26 @@ class AISettings {
     document.getElementById('set-model').value = cfg.model || '';
     document.getElementById('set-apikey').value = '';
     document.getElementById('set-system-prompt').value = this.persona.customPrompt || '';
-
-    if (this.llmClient.hasApiKey()) {
-      document.getElementById('set-apikey').placeholder = '已设置 (留空不修改)';
-    }
+    this._refreshApiKeyStatus();
 
     // 语气预设选中状态
     this._selectedPreset = this.persona.activePreset;
     this._renderTonePresets();
+  }
+
+  _refreshApiKeyStatus() {
+    const status = document.getElementById('set-apikey-status');
+    const input = document.getElementById('set-apikey');
+    const info = this.llmClient.getApiKeyInfo();
+    if (info.hasApiKey) {
+      status.textContent = `已设置：${info.preview || '••••'}`;
+      status.className = 'api-key-status ok';
+      input.placeholder = '留空则不修改';
+    } else {
+      status.textContent = '未设置';
+      status.className = 'api-key-status warn';
+      input.placeholder = '输入新 Key 后保存';
+    }
   }
 
   async save() {
@@ -194,7 +213,7 @@ class AISettings {
     const apiKey = document.getElementById('set-apikey').value.trim();
     const systemPrompt = document.getElementById('set-system-prompt').value.trim();
 
-    if (endpoint) await this.llmClient.updateConfig({ endpoint, model });
+    if (endpoint || model) await this.llmClient.updateConfig({ endpoint, model });
     if (apiKey) await this.llmClient.setApiKey(apiKey);
 
     if (systemPrompt) {
@@ -226,7 +245,13 @@ class AISettings {
 
     const endpoint = document.getElementById('set-endpoint').value.trim() || LLM_DEFAULT.endpoint;
     const model = document.getElementById('set-model').value.trim() || LLM_DEFAULT.model;
-    const apiKey = document.getElementById('set-apikey').value.trim();
+    const apiKey = document.getElementById('set-apikey').value.trim() || this.llmClient.getRuntimeApiKey();
+
+    if (!apiKey) {
+      resultEl.textContent = '✗ 请先输入 API Key';
+      resultEl.style.color = '#f44336';
+      return;
+    }
 
     try {
       await this.llmClient.testConnection(endpoint, model, apiKey);

@@ -7,12 +7,28 @@ let tray = null;
 let activeLLMController = null;
 let settingsPath = '';
 let statsPath = '';
+let apiKeyPath = '';
+let memoryPath = '';
 
 function getSettingsPath() {
   if (!settingsPath) {
     settingsPath = path.join(app.getPath('userData'), 'pet-settings.json');
   }
   return settingsPath;
+}
+
+function getApiKeyPath() {
+  if (!apiKeyPath) {
+    apiKeyPath = path.join(app.getPath('userData'), 'pet-api-key.json');
+  }
+  return apiKeyPath;
+}
+
+function getMemoryPath() {
+  if (!memoryPath) {
+    memoryPath = path.join(app.getPath('userData'), 'pet-memory.json');
+  }
+  return memoryPath;
 }
 
 function getStatsPath() {
@@ -24,18 +40,145 @@ function getStatsPath() {
 
 function loadSettings() {
   try {
-    return JSON.parse(fs.readFileSync(getSettingsPath(), 'utf-8'));
+    const parsed = JSON.parse(fs.readFileSync(getSettingsPath(), 'utf-8'));
+    return {
+      endpoint: parsed.endpoint || 'https://api.openai.com/v1/chat/completions',
+      model: parsed.model || 'gpt-3.5-turbo',
+      systemPrompt: parsed.systemPrompt || '',
+    };
   } catch (e) {
-    return { endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-3.5-turbo' };
+    return { endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-3.5-turbo', systemPrompt: '' };
   }
 }
 
 function saveSettings(settings) {
   try {
     const current = loadSettings();
-    const merged = { ...current, ...settings };
+    const safeSettings = {
+      endpoint: settings.endpoint,
+      model: settings.model,
+      systemPrompt: settings.systemPrompt,
+    };
+    const merged = Object.fromEntries(
+      Object.entries({ ...current, ...safeSettings }).filter(([, value]) => value !== undefined)
+    );
     fs.writeFileSync(getSettingsPath(), JSON.stringify(merged, null, 2), 'utf-8');
   } catch (e) { /* ignore */ }
+}
+
+function loadApiKeyRecord() {
+  try {
+    return JSON.parse(fs.readFileSync(getApiKeyPath(), 'utf-8'));
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveApiKeyRecord(record) {
+  fs.writeFileSync(getApiKeyPath(), JSON.stringify(record, null, 2), 'utf-8');
+}
+
+function readApiKey() {
+  const record = loadApiKeyRecord();
+  if (record?.encryptedApiKey && safeStorage.isEncryptionAvailable()) {
+    return safeStorage.decryptString(Buffer.from(record.encryptedApiKey, 'base64'));
+  }
+  return record?.apiKey || '';
+}
+
+function hasApiKey() {
+  const record = loadApiKeyRecord();
+  return !!(record?.encryptedApiKey || record?.apiKey);
+}
+
+function maskSecret(value) {
+  if (!value) return '';
+  if (value.length <= 8) return '••••';
+  return `${value.slice(0, 4)}••••${value.slice(-4)}`;
+}
+
+function loadMemory() {
+  try {
+    const raw = fs.readFileSync(getMemoryPath(), 'utf-8');
+    return normalizeMemory(JSON.parse(raw));
+  } catch (e) {
+    return normalizeMemory({});
+  }
+}
+
+function saveMemory(memory) {
+  fs.writeFileSync(getMemoryPath(), JSON.stringify(normalizeMemory(memory), null, 2), 'utf-8');
+}
+
+function compactMemoryItems(items, limit, maxLength = 48) {
+  const seen = new Set();
+  const compacted = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    const normalized = String(item || '').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    compacted.push(normalized);
+  }
+  return compacted.slice(-limit);
+}
+
+function normalizeMemory(memory) {
+  const now = new Date().toISOString();
+  return {
+    version: 1,
+    updatedAt: memory.updatedAt || now,
+    facts: compactMemoryItems(memory.facts, 20),
+    preferences: compactMemoryItems(memory.preferences, 20),
+    recentTopics: compactMemoryItems(memory.recentTopics, 12, 80),
+    affinity: Number.isFinite(memory.affinity) ? Math.max(0, Math.min(100, memory.affinity)) : 50,
+  };
+}
+
+function buildMemorySummary(memory) {
+  const m = normalizeMemory(memory);
+  const lines = [];
+  if (m.preferences.length) lines.push(`偏好：${m.preferences.slice(-5).join('；')}`);
+  if (m.facts.length) lines.push(`已知信息：${m.facts.slice(-5).join('；')}`);
+  if (m.recentTopics.length) lines.push(`最近话题：${m.recentTopics.slice(-5).join('；')}`);
+  lines.push(`亲近度：${Math.round(m.affinity)}/100`);
+  return lines.join('\n');
+}
+
+function updateMemoryFromChat(userText, assistantText) {
+  const memory = loadMemory();
+  const now = new Date().toISOString();
+  const user = String(userText || '').replace(/\s+/g, ' ').trim();
+  const assistant = String(assistantText || '').replace(/\s+/g, ' ').trim();
+  const text = `${user}\n${assistant}`.trim();
+  const preferenceMatch = user.match(/(?:我喜欢|喜欢|爱吃|想要|偏好)([^，。！？\n]{1,24})/);
+  const factMatch = user.match(/(?:我是|我叫|我的)([^，。！？\n]{1,28})/);
+  const nextMemory = normalizeMemory({
+    ...memory,
+    updatedAt: now,
+    recentTopics: [...memory.recentTopics, user.slice(0, 60)],
+    affinity: Math.min(100, memory.affinity + (assistant ? 1 : 0)),
+  });
+  if (preferenceMatch) nextMemory.preferences = compactMemoryItems([...nextMemory.preferences, preferenceMatch[0]], 20);
+  if (factMatch) nextMemory.facts = compactMemoryItems([...nextMemory.facts, factMatch[0]], 20);
+  if (!preferenceMatch && !factMatch && text.length > 0 && text.length < 120) {
+    nextMemory.recentTopics = compactMemoryItems([...nextMemory.recentTopics, text], 12, 80);
+  }
+  saveMemory(nextMemory);
+  return nextMemory;
+}
+
+function buildChatMessages(history, message, fallbackSystemPrompt = '') {
+  const messages = Array.isArray(history)
+    ? history.filter(item => item && item.role && item.content)
+    : [];
+  if (!messages.some(item => item.role === 'system') && fallbackSystemPrompt) {
+    messages.unshift({ role: 'system', content: fallbackSystemPrompt });
+  }
+  const last = messages[messages.length - 1];
+  if (!(last && last.role === 'user' && last.content === message)) {
+    messages.push({ role: 'user', content: message });
+  }
+  return messages;
 }
 
 function createPetWindow() {
@@ -171,15 +314,17 @@ ipcMain.on('save-settings', (event, settings) => {
 
 ipcMain.on('load-settings', (event) => {
   const settings = loadSettings();
-  let hasApiKey = false;
+  let apiKeyPreview = '';
   try {
-    hasApiKey = !!(settings.encryptedApiKey && settings.encryptedApiKey.length > 0);
+    apiKeyPreview = maskSecret(readApiKey());
   } catch (e) { /* ignore */ }
   event.returnValue = {
     endpoint: settings.endpoint,
     model: settings.model,
     systemPrompt: settings.systemPrompt || '',
-    hasApiKey,
+    hasApiKey: hasApiKey(),
+    apiKeyPreview,
+    secureStorage: safeStorage.isEncryptionAvailable() ? 'encrypted' : 'plain-fallback',
   };
 });
 
@@ -187,17 +332,42 @@ ipcMain.on('set-api-key', (event, { apiKey }) => {
   try {
     if (safeStorage.isEncryptionAvailable()) {
       const encrypted = safeStorage.encryptString(apiKey);
-      saveSettings({ encryptedApiKey: encrypted.toString('base64') });
+      saveApiKeyRecord({ encryptedApiKey: encrypted.toString('base64'), updatedAt: new Date().toISOString() });
     } else {
-      saveSettings({ apiKey }); // fallback: plain text (less secure)
+      saveApiKeyRecord({ apiKey, updatedAt: new Date().toISOString(), fallback: 'plain' });
     }
   } catch (e) {
-    saveSettings({ apiKey });
+    saveApiKeyRecord({ apiKey, updatedAt: new Date().toISOString(), fallback: 'plain' });
   }
 });
 
 ipcMain.on('clear-api-key', () => {
-  saveSettings({ encryptedApiKey: null, apiKey: null });
+  try { fs.unlinkSync(getApiKeyPath()); } catch (e) { /* ignore */ }
+});
+
+ipcMain.on('load-memory', (event) => {
+  event.returnValue = loadMemory();
+});
+
+ipcMain.on('save-memory', (event, memory) => {
+  try {
+    saveMemory(memory);
+    event.returnValue = true;
+  } catch (e) {
+    event.returnValue = false;
+  }
+});
+
+ipcMain.on('get-memory-summary', (event) => {
+  event.returnValue = buildMemorySummary(loadMemory());
+});
+
+ipcMain.on('update-memory-from-chat', (event, { userText, assistantText }) => {
+  try {
+    event.returnValue = updateMemoryFromChat(userText || '', assistantText || '');
+  } catch (e) {
+    event.returnValue = loadMemory();
+  }
 });
 
 ipcMain.on('save-stats', (event, { stats }) => {
@@ -221,16 +391,14 @@ ipcMain.on('llm-chat', async (event, { message, history }) => {
   const settings = loadSettings();
   let apiKey = '';
 
-  if (settings.encryptedApiKey && safeStorage.isEncryptionAvailable()) {
-    try {
-      apiKey = safeStorage.decryptString(Buffer.from(settings.encryptedApiKey, 'base64'));
-    } catch (e) {
-      petWindow.webContents.send('llm-stream-error', { error: 'API Key decryption failed' });
-      return;
-    }
-  } else if (settings.apiKey) {
-    apiKey = settings.apiKey;
-  } else {
+  try {
+    apiKey = readApiKey();
+  } catch (e) {
+    petWindow.webContents.send('llm-stream-error', { error: 'API Key decryption failed' });
+    return;
+  }
+
+  if (!apiKey) {
     petWindow.webContents.send('llm-stream-error', { error: 'API Key not configured' });
     return;
   }
@@ -238,13 +406,7 @@ ipcMain.on('llm-chat', async (event, { message, history }) => {
   const endpoint = settings.endpoint || 'https://api.openai.com/v1/chat/completions';
   const model = settings.model || 'gpt-3.5-turbo';
   const systemPrompt = settings.systemPrompt || '';
-
-  const messages = [];
-  if (systemPrompt) {
-    messages.push({ role: 'system', content: systemPrompt });
-  }
-  messages.push(...history);
-  messages.push({ role: 'user', content: message });
+  const messages = buildChatMessages(history, message, systemPrompt);
 
   activeLLMController = new AbortController();
 

@@ -2,12 +2,13 @@
 // 支持语气预设和人格编辑
 
 class ChatUI {
-  constructor(container, core, llmClient, personaSystem, messageBar) {
+  constructor(container, core, llmClient, personaSystem, messageBar, memory) {
     this.container = container;
     this.core = core;
     this.llmClient = llmClient;
     this.persona = personaSystem;
     this.messageBar = messageBar;
+    this.memory = memory;
     this.isVisible = false;
     this.isThinking = false;
     this.messages = [];
@@ -75,7 +76,8 @@ class ChatUI {
     const stats = this.core.stats;
     const mood = this.core.mood;
     const recentEvents = this.core.getRecentEventsText();
-    const sysPrompt = this.persona.buildPrompt(stats, mood, recentEvents);
+    const memorySummary = this.memory ? this.memory.summary() : '';
+    const sysPrompt = this.persona.buildPrompt(stats, mood, recentEvents, memorySummary);
     this.history.push({ role: 'system', content: sysPrompt });
 
     this._addBubble('pet', '喵~主人你好！我是小橘，你的桌面伙伴！有什么想聊的吗？(*´∀`*)');
@@ -103,7 +105,8 @@ class ChatUI {
     const stats = this.core.stats;
     const mood = this.core.mood;
     const recentEvents = this.core.getRecentEventsText();
-    this.history[0] = { role: 'system', content: this.persona.buildPrompt(stats, mood, recentEvents) };
+    const memorySummary = this.memory ? this.memory.summary() : '';
+    this.history[0] = { role: 'system', content: this.persona.buildPrompt(stats, mood, recentEvents, memorySummary) };
   }
 
   hide() {
@@ -153,7 +156,7 @@ class ChatUI {
 
     await this.llmClient.chat(
       text,
-      this.history.slice(1),
+      this.history,
       (chunk, index) => {
         responseText += chunk;
         if (index === 0) {
@@ -168,9 +171,13 @@ class ChatUI {
       () => {
         this.setThinking(false);
         this.history.push({ role: 'assistant', content: responseText });
+        if (this.memory) this.memory.updateFromChat(text, responseText);
         this.messageBar.finishStreaming();
-        this.core.state = PetState.IDLE;
-        this.core.currentGraphType = GraphType.DEFAULT;
+        this.core.state = PetState.HAPPY;
+        this.core.currentGraphType = this._pickReplyGraph(responseText);
+        this.core.idleDuration = 80;
+        this.core.idleTimer = 0;
+        this.core.addEvent('记住了一次聊天');
         this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
       },
       (err) => {
@@ -181,6 +188,14 @@ class ChatUI {
         this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
       }
     );
+  }
+
+  _pickReplyGraph(text) {
+    const content = text || '';
+    if (/开心|喜欢|太好|谢谢|棒|嘿嘿|嘻嘻/.test(content)) return GraphType.SAY;
+    if (/困|累|睡|晚安/.test(content)) return 'sleep';
+    if (/吃|饿|小鱼干|饭/.test(content)) return 'eat';
+    return GraphType.SAY;
   }
 
   _addBubble(role, content, isStreaming = false) {

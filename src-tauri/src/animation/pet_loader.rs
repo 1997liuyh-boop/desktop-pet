@@ -24,7 +24,14 @@ impl PetLoader {
     /// 按相对路径读取 PNG 原始字节
     pub fn read_frame_raw(&self, relative_path: &str) -> Result<Vec<u8>, String> {
         let full = self.vpet_base.join(relative_path);
-        std::fs::read(&full).map_err(|e| format!("读取失败 {}: {}", relative_path, e))
+        std::fs::read(&full).map_err(|e| {
+            format!(
+                "读取帧失败: {}；资源根目录: {}；原因: {}",
+                relative_path,
+                self.vpet_base.display(),
+                e
+            )
+        })
     }
 
     /// 加载单帧 PNG 并解码为 DynamicImage (暂未使用)

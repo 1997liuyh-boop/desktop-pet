@@ -56,21 +56,11 @@ class PngLoader {
     const modes = this.manifest.animations[graphType];
     if (!modes) return null;
 
-    // 先精确匹配 modeType
     let atypes = modes[modeType];
-    // 回退到 normal
     if (!atypes) atypes = modes['normal'];
     if (!atypes) return null;
 
-    // 精确匹配 animatType
-    let frames = atypes[animatType];
-    // 回退到 single
-    if (!frames) frames = atypes['single'];
-    // 回退到 b_loop
-    if (!frames) frames = atypes['b_loop'];
-    if (!frames) return null;
-
-    return frames;
+    return atypes[animatType] || null;
   }
 
   // 创建可播放的 FrameAnim 实例

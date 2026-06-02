@@ -128,8 +128,9 @@
   </div>
   <div id="status-bar" id="status">就绪</div>
 
+  <script src="scripts/runtime.js"></script>
   <script>
-    const { invoke } = window.__TAURI__.core;
+    const { invoke } = window.PetRuntime;
     const msgs = document.getElementById('chat-messages');
     const input = document.getElementById('msg-input');
     const sendBtn = document.getElementById('send-btn');
@@ -148,7 +149,7 @@
       } catch (_) { /* 使用默认名 */ }
       document.title = `和${petName}聊天`;
       // 同步原生窗口标题栏
-      try { await window.__TAURI__.window.getCurrent().setTitle(`和${petName}聊天`); } catch (_) {}
+      try { await window.PetRuntime.currentWindow().setTitle(`和${petName}聊天`); } catch (_) {}
       document.getElementById('chat-title').textContent = `和${petName}聊天`;
       document.getElementById('thinking-name').textContent = petName;
       addBubble('pet', `喵~ 你好！有什么想和${petName}说的吗？(◕ᴥ◕)`);
@@ -189,7 +190,8 @@
 
       try {
         const config = await invoke('load_llm_config', {});
-        if (!config.api_key) {
+        const hasApiKey = await invoke('has_llm_api_key', {});
+        if (!hasApiKey) {
           replyBubble.textContent = '请先在设置中配置 API Key';
           status.textContent = '未配置 API Key';
           isSending = false; sendBtn.disabled = false; thinking.classList.remove('active');
@@ -209,12 +211,12 @@
 
         let fullText = '';
         // 必须先 await 注册监听器, 否则流式事件会早于监听器注册而丢失 (导致"没有回复")
-        const unlistenChunk = await window.__TAURI__.event.listen('llm-stream-chunk', (e) => {
+        const unlistenChunk = await window.PetRuntime.listen('llm-stream-chunk', (e) => {
           fullText += e.payload;
           replyBubble.textContent = fullText;
           msgs.scrollTop = msgs.scrollHeight;
         });
-        const unlistenDone = await window.__TAURI__.event.listen('llm-stream-done', (e) => {
+        const unlistenDone = await window.PetRuntime.listen('llm-stream-done', (e) => {
           const final = e.payload || fullText;
           replyBubble.textContent = final;
           isSending = false;
@@ -222,7 +224,7 @@
           thinking.classList.remove('active');
           status.textContent = '已回复';
           // 通知主窗口在宠物气泡中显示回复
-          if (final) window.__TAURI__.event.emit('chat-reply', final).catch(() => {});
+          if (final) window.PetRuntime.emit('chat-reply', final).catch(() => {});
         });
 
         const newHistory = await invoke('chat_stream', {

@@ -7,6 +7,8 @@ const GraphType = {
   IDLE:       'idle',         // 空闲变化
   TOUCH_HEAD: 'touch_head',   // 摸头反应
   TOUCH_BODY: 'touch_body',   // 摸身体反应
+  PINCH:      'pinch',        // 捏脸反应
+  MUSIC:      'music',        // 音乐动作
   SAY:        'say',          // 说话
   EAT:        'eat',          // 吃东西
   DRINK:      'drink',        // 喝水
@@ -46,17 +48,19 @@ const Expression = {
 };
 
 const PetState = {
-  IDLE:   'idle',
-  WALK:   'walk',
-  SIT:    'sit',
-  SLEEP:  'sleep',
-  HAPPY:  'happy',
-  DRAG:   'drag',
-  EAT:    'eat',
-  WORK:   'work',
-  CHAT:   'chat',
-  RAISE:  'raise',
-  SAY:    'say',
+  IDLE:     'idle',
+  WALK:     'walk',
+  SIT:      'sit',
+  SLEEP:    'sleep',
+  HAPPY:    'happy',
+  DRAG:     'drag',
+  EAT:      'eat',
+  WORK:     'work',
+  CHAT:     'chat',
+  RAISE:    'raise',
+  SAY:      'say',
+  MUSIC:    'music',
+  MISCHIEF: 'mischief',
 };
 
 const ActivityType = {

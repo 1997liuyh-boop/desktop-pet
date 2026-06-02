@@ -1,9 +1,20 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::Manager;
 use crate::systems::stats::StatsData;
 use crate::ai::persona::PersonaSystem;
 use crate::ai::llm_client::{LLMConfig, ChatMessage, chat_stream as llm_chat_stream};
+
+#[cfg(target_os = "windows")]
+use windows::Win32::Media::Audio::{
+    eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::Media::Audio::Endpoints::IAudioMeterInformation;
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+};
 
 // ── 动画/帧相关 ──
 
@@ -14,36 +25,223 @@ pub fn greet(name: &str) -> String {
 
 #[tauri::command]
 pub fn get_manifest(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    let resource_path = app.path().resource_dir()
-        .map_err(|e| e.to_string())?
-        .join("assets")
-        .join("pet-manifest.json");
-    load_json_or_dev_fallback(&resource_path)
+    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let candidates = vec![
+        resource_dir.join("assets").join("pet-manifest.json"),
+        resource_dir.join("pet-manifest.json"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("assets")
+            .join("pet-manifest.json"),
+    ];
+    load_json_from_candidates(&candidates)
 }
 
-fn load_json_or_dev_fallback(resource_path: &PathBuf) -> Result<serde_json::Value, String> {
-    let content = fs::read_to_string(resource_path)
-        .unwrap_or_else(|_| {
-            let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("assets")
-                .join("pet-manifest.json");
-            fs::read_to_string(&dev_path).unwrap_or_default()
-        });
-    // 去除 Windows 工具可能写入的 UTF-8 BOM (EF BB BF)
-    let content = content.trim_start_matches('\u{FEFF}');
-    serde_json::from_str(content).map_err(|e| e.to_string())
+fn load_json_from_candidates(paths: &[PathBuf]) -> Result<serde_json::Value, String> {
+    let mut errors = Vec::new();
+
+    for path in paths {
+        match fs::read_to_string(path) {
+            Ok(content) => {
+                let content = content.trim_start_matches('\u{FEFF}');
+                return serde_json::from_str(content).map_err(|e| e.to_string());
+            }
+            Err(e) => errors.push(format!("{}: {}", path.display(), e)),
+        }
+    }
+
+    Err(format!("pet-manifest.json not found: {}", errors.join("; ")))
+}
+
+fn resolve_vpet_base(app: &tauri::AppHandle, manifest: &serde_json::Value) -> PathBuf {
+    if let Ok(path) = std::env::var("DESKTOP_PET_VPET_BASE") {
+        let candidate = PathBuf::from(path);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    if let Some(source) = manifest
+        .get("meta")
+        .and_then(|meta| meta.get("source"))
+        .and_then(|source| source.as_str())
+    {
+        let candidate = Path::new(source).to_path_buf();
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    app.path()
+        .resource_dir()
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."))
+        .join("assets")
+        .join("vup")
+}
+
+fn read_frame_raw(app: &tauri::AppHandle, frame_path: &str) -> Result<Vec<u8>, String> {
+    let manifest = get_manifest(app.clone())?;
+    let base = resolve_vpet_base(app, &manifest);
+    let full = base.join(frame_path);
+    fs::read(&full).map_err(|e| {
+        format!(
+            "读取帧失败: {}；资源根目录: {}；原因: {}",
+            frame_path,
+            base.display(),
+            e
+        )
+    })
 }
 
 #[tauri::command]
 pub fn read_png_frame(
+    app: tauri::AppHandle,
     frame_path: String,
-    state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<String, String> {
-    let loader = state.pet_loader.lock().map_err(|e| e.to_string())?;
-    let bytes = loader.read_frame_raw(&frame_path)?;
+    let bytes = read_frame_raw(&app, &frame_path)?;
     use base64::Engine;
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
+fn parse_frame_duration_ms(name: &str) -> u64 {
+    let stem = name.rsplit_once('.').map(|(left, _)| left).unwrap_or(name);
+    stem.rsplit('_')
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .unwrap_or(125)
+}
+
+fn move_phase_from_dir(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("a_") || lower.ends_with("_a") || lower.contains("_a_") {
+        "a_start"
+    } else if lower.starts_with("c_") || lower.ends_with("_c") || lower.contains("_c_") {
+        "c_end"
+    } else {
+        "b_loop"
+    }
+}
+
+fn push_move_dir_frames(
+    frames: &mut Vec<serde_json::Value>,
+    variant: &str,
+    dir_name: &str,
+    dir_path: &Path,
+) -> Result<(), String> {
+    fn collect_png_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) -> Result<(), String> {
+        let mut entries: Vec<_> = fs::read_dir(dir)
+            .map_err(|e| format!("读取行走帧目录失败 {}: {}", dir.display(), e))?
+            .filter_map(Result::ok)
+            .collect();
+
+        entries.sort_by(|a, b| {
+            a.file_name()
+                .to_string_lossy()
+                .cmp(&b.file_name().to_string_lossy())
+        });
+
+        for entry in entries {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_png_files(root, &path, out)?;
+                continue;
+            }
+
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.to_ascii_lowercase().ends_with(".png") {
+                continue;
+            }
+
+            let rel = path
+                .strip_prefix(root)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.push((rel, name));
+        }
+
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    collect_png_files(dir_path, dir_path, &mut files)?;
+
+    for (rel_path, name) in files {
+        let index = frames.len();
+        frames.push(serde_json::json!({
+            "file": format!("MOVE/{}/{}/{}", variant, dir_name, rel_path),
+            "name": name,
+            "duration": parse_frame_duration_ms(&name),
+            "index": index,
+        }));
+    }
+
+    Ok(())
+}
+
+fn get_move_variant_frames(
+    app: &tauri::AppHandle,
+    manifest: &serde_json::Value,
+    variant: &str,
+) -> Result<serde_json::Value, String> {
+    const ALLOWED: [&str; 6] = [
+        "walk.left",
+        "walk.right",
+        "walk.left.slow",
+        "walk.right.slow",
+        "walk.left.faster",
+        "walk.right.faster",
+    ];
+
+    if !ALLOWED.contains(&variant) {
+        let base = resolve_vpet_base(app, manifest);
+        let dynamic_dir = base.join("MOVE").join(variant);
+        if !dynamic_dir.exists() {
+            return Err(format!("unsupported move variant: {}", variant));
+        }
+    }
+
+    let base = resolve_vpet_base(app, manifest);
+    let dir = base.join("MOVE").join(variant);
+    if !dir.exists() {
+        return Err(format!("move variant not found: {}", dir.display()));
+    }
+
+    let mut subdirs: Vec<_> = fs::read_dir(&dir)
+        .map_err(|e| format!("读取行走资源目录失败 {}: {}", dir.display(), e))?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .collect();
+
+    subdirs.sort_by(|a, b| {
+        a.file_name()
+            .to_string_lossy()
+            .cmp(&b.file_name().to_string_lossy())
+    });
+
+    let mut a_start = Vec::new();
+    let mut b_loop = Vec::new();
+    let mut c_end = Vec::new();
+
+    for entry in subdirs {
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        match move_phase_from_dir(&dir_name) {
+            "a_start" => push_move_dir_frames(&mut a_start, variant, &dir_name, &entry.path())?,
+            "c_end" => push_move_dir_frames(&mut c_end, variant, &dir_name, &entry.path())?,
+            _ => push_move_dir_frames(&mut b_loop, variant, &dir_name, &entry.path())?,
+        }
+    }
+
+    if b_loop.is_empty() {
+        b_loop.extend(a_start.clone());
+        a_start.clear();
+    }
+
+    Ok(serde_json::json!({
+        "a_start": a_start,
+        "b_loop": b_loop,
+        "c_end": c_end,
+    }))
 }
 
 #[tauri::command]
@@ -52,9 +250,18 @@ pub fn get_animation_frames(
     graph_type: String,
     mode: String,
 ) -> Result<serde_json::Value, String> {
-    let manifest = get_manifest(app)?;
+    let manifest = get_manifest(app.clone())?;
+
+    if let Some(variant) = graph_type.strip_prefix("move.") {
+        match get_move_variant_frames(&app, &manifest, variant) {
+            Ok(frames) => return Ok(frames),
+            Err(e) => eprintln!("动态行走帧加载失败，回退 move: {}", e),
+        }
+    }
+
+    let lookup_graph_type = if graph_type.starts_with("move.") { "move" } else { graph_type.as_str() };
     let anims = manifest.get("animations").ok_or("manifest missing 'animations'")?;
-    let graph = anims.get(&graph_type)
+    let graph = anims.get(lookup_graph_type)
         .ok_or_else(|| format!("graphType '{}' not found", graph_type))?;
     let mood_data = graph.get(&mode)
         .or_else(|| graph.get("normal"))
@@ -64,14 +271,16 @@ pub fn get_animation_frames(
 
 #[tauri::command]
 pub fn read_png_frames_batch(
+    app: tauri::AppHandle,
     frame_paths: Vec<String>,
-    state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<std::collections::HashMap<String, String>, String> {
     use base64::Engine;
-    let loader = state.pet_loader.lock().map_err(|e| e.to_string())?;
+    let manifest = get_manifest(app.clone())?;
+    let base = resolve_vpet_base(&app, &manifest);
     let mut result = std::collections::HashMap::new();
     for path in frame_paths {
-        if let Ok(bytes) = loader.read_frame_raw(&path) {
+        let full = base.join(&path);
+        if let Ok(bytes) = fs::read(&full) {
             result.insert(path, base64::engine::general_purpose::STANDARD.encode(&bytes));
         }
     }
@@ -119,6 +328,32 @@ pub fn get_window_position(window: tauri::WebviewWindow) -> Result<serde_json::V
     }))
 }
 
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub fn get_system_audio_level() -> Result<f64, String> {
+    unsafe {
+        let com_initialized = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let result = (|| -> windows::core::Result<f64> {
+            let enumerator: IMMDeviceEnumerator =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+            let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
+            let meter: IAudioMeterInformation = device.Activate(CLSCTX_ALL, None)?;
+            let peak = meter.GetPeakValue()?;
+            Ok(f64::from(peak.clamp(0.0, 1.0)))
+        })();
+        if com_initialized {
+            CoUninitialize();
+        }
+        result.map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+pub fn get_system_audio_level() -> Result<f64, String> {
+    Ok(0.0)
+}
+
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
@@ -146,21 +381,24 @@ pub fn set_clickthrough(window: tauri::WebviewWindow, enabled: bool) -> Result<(
 
 // ── 存档相关 ──
 
-fn data_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("data")
+fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
 }
 
 #[tauri::command]
-pub fn save_stats(stats: StatsData) -> Result<(), String> {
-    let dir = data_dir();
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+pub fn save_stats(app: tauri::AppHandle, stats: StatsData) -> Result<(), String> {
+    let dir = data_dir(&app)?;
     let json = serde_json::to_string_pretty(&stats).map_err(|e| e.to_string())?;
     fs::write(dir.join("pet-stats.json"), json).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn load_stats() -> Result<StatsData, String> {
-    let path = data_dir().join("pet-stats.json");
+pub fn load_stats(app: tauri::AppHandle) -> Result<StatsData, String> {
+    let path = data_dir(&app)?.join("pet-stats.json");
     if !path.exists() { return Ok(StatsData::default()); }
     let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
     serde_json::from_str(&content).map_err(|e| e.to_string())
@@ -168,20 +406,136 @@ pub fn load_stats() -> Result<StatsData, String> {
 
 // ── LLM 配置 ──
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PetMemory {
+    #[serde(default = "default_memory_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
+    pub facts: Vec<String>,
+    #[serde(default)]
+    pub preferences: Vec<String>,
+    #[serde(default)]
+    pub recent_topics: Vec<String>,
+    #[serde(default = "default_affinity")]
+    pub affinity: f64,
+}
+
+fn default_memory_version() -> u32 { 1 }
+fn default_affinity() -> f64 { 50.0 }
+
+impl Default for PetMemory {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            updated_at: String::new(),
+            facts: Vec::new(),
+            preferences: Vec::new(),
+            recent_topics: Vec::new(),
+            affinity: 50.0,
+        }
+    }
+}
+
+fn sanitize_llm_config(mut config: LLMConfig) -> LLMConfig {
+    config.api_key = String::new();
+    config
+}
+
+fn api_key_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join("llm-api-key.txt"))
+}
+
+fn trim_recent(mut values: Vec<String>, limit: usize) -> Vec<String> {
+    values.retain(|s| !s.trim().is_empty());
+    if values.len() > limit {
+        values = values.split_off(values.len() - limit);
+    }
+    values
+}
+
+fn normalize_memory(mut memory: PetMemory) -> PetMemory {
+    memory.version = 1;
+    memory.facts = trim_recent(memory.facts, 20);
+    memory.preferences = trim_recent(memory.preferences, 20);
+    memory.recent_topics = trim_recent(memory.recent_topics, 12);
+    memory.affinity = memory.affinity.clamp(0.0, 100.0);
+    memory
+}
+
 #[tauri::command]
-pub fn save_llm_config(config: LLMConfig) -> Result<(), String> {
-    let dir = data_dir();
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+pub fn save_llm_config(app: tauri::AppHandle, config: LLMConfig) -> Result<(), String> {
+    let dir = data_dir(&app)?;
+    let safe_config = sanitize_llm_config(config);
+    let json = serde_json::to_string_pretty(&safe_config).map_err(|e| e.to_string())?;
     fs::write(dir.join("llm-config.json"), json).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn load_llm_config() -> Result<LLMConfig, String> {
-    let path = data_dir().join("llm-config.json");
+pub fn load_llm_config(app: tauri::AppHandle) -> Result<LLMConfig, String> {
+    let path = data_dir(&app)?.join("llm-config.json");
     if !path.exists() { return Ok(LLMConfig::default()); }
     let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&content).map_err(|e| e.to_string())
+    let config: LLMConfig = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    Ok(sanitize_llm_config(config))
+}
+
+#[tauri::command]
+pub fn save_llm_api_key(app: tauri::AppHandle, api_key: String) -> Result<(), String> {
+    fs::write(api_key_path(&app)?, api_key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn clear_llm_api_key(app: tauri::AppHandle) -> Result<(), String> {
+    let path = api_key_path(&app)?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn has_llm_api_key(app: tauri::AppHandle) -> Result<bool, String> {
+    Ok(api_key_path(&app)?.exists())
+}
+
+#[tauri::command]
+pub fn load_memory(app: tauri::AppHandle) -> Result<PetMemory, String> {
+    let path = data_dir(&app)?.join("pet-memory.json");
+    if !path.exists() { return Ok(PetMemory::default()); }
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let memory: PetMemory = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    Ok(normalize_memory(memory))
+}
+
+#[tauri::command]
+pub fn save_memory(app: tauri::AppHandle, memory: PetMemory) -> Result<(), String> {
+    let dir = data_dir(&app)?;
+    let json = serde_json::to_string_pretty(&normalize_memory(memory)).map_err(|e| e.to_string())?;
+    fs::write(dir.join("pet-memory.json"), json).map_err(|e| e.to_string())
+}
+
+fn last_items(values: &[String], limit: usize) -> String {
+    let start = values.len().saturating_sub(limit);
+    values[start..].join("；")
+}
+
+#[tauri::command]
+pub fn memory_summary(app: tauri::AppHandle) -> Result<String, String> {
+    let memory = load_memory(app)?;
+    let mut lines = Vec::new();
+    if !memory.preferences.is_empty() {
+        lines.push(format!("偏好：{}", last_items(&memory.preferences, 5)));
+    }
+    if !memory.facts.is_empty() {
+        lines.push(format!("已知信息：{}", last_items(&memory.facts, 5)));
+    }
+    if !memory.recent_topics.is_empty() {
+        lines.push(format!("最近话题：{}", last_items(&memory.recent_topics, 5)));
+    }
+    lines.push(format!("亲近度：{}/100", memory.affinity.round() as u32));
+    Ok(lines.join("\n"))
 }
 
 // ── 人设预设 ──
@@ -206,10 +560,11 @@ pub fn build_persona_prompt(
     hunger: f64,
     happiness: f64,
     is_working: bool,
+    memory_summary: Option<String>,
 ) -> Result<String, String> {
     let system = PersonaSystem::new();
     let custom = custom_prompt.as_deref();
-    Ok(system.build_prompt(custom, &mood, hunger, happiness, is_working))
+    Ok(system.build_prompt(custom, &mood, hunger, happiness, is_working, memory_summary.as_deref()))
 }
 
 // ── LLM 聊天 (流式, 无状态) ──
@@ -218,10 +573,16 @@ pub fn build_persona_prompt(
 pub async fn chat_stream(
     app: tauri::AppHandle,
     message: String,
-    config: LLMConfig,
+    mut config: LLMConfig,
     system_prompt: String,
     history: Vec<ChatMessage>,
 ) -> Result<Vec<ChatMessage>, String> {
+    if config.api_key.is_empty() {
+        let path = api_key_path(&app)?;
+        if path.exists() {
+            config.api_key = fs::read_to_string(path).map_err(|e| e.to_string())?;
+        }
+    }
     llm_chat_stream(config, system_prompt, history, message, app).await
 }
 
@@ -340,6 +701,12 @@ pub fn get_pet_status(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_js
 pub fn pet_action_feed(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| e.to_string())?;
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+    let mut work = state.work.lock().map_err(|e| e.to_string())?;
+
+    // 手动吃喝优先级高于工作：中断当前工作，动作结束后回到待机。
+    if work.is_active {
+        work.stop();
+    }
 
     // 随机挑一份可吃食物, 取其真实属性
     let food = crate::systems::food::pick_random("eat")
@@ -349,6 +716,7 @@ pub fn pet_action_feed(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_j
         food.strength_drink, food.feeling, food.health, 0.0,
     );
     stats.data.mark_interaction();
+    core.set_state(PetState::Idle);
     core.current_graph_type = "eat".into();
     core.set_action_lock(3.0);
 
@@ -368,6 +736,12 @@ pub fn pet_action_feed(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_j
 pub fn pet_action_drink(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| e.to_string())?;
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+    let mut work = state.work.lock().map_err(|e| e.to_string())?;
+
+    // 手动吃喝优先级高于工作：中断当前工作，动作结束后回到待机。
+    if work.is_active {
+        work.stop();
+    }
 
     // 随机挑一份饮料, 取其真实属性
     let food = crate::systems::food::pick_random("drink")
@@ -377,6 +751,7 @@ pub fn pet_action_drink(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_
         food.strength_drink, food.feeling, food.health, 0.0,
     );
     stats.data.mark_interaction();
+    core.set_state(PetState::Idle);
     core.current_graph_type = "drink".into();
     core.set_action_lock(3.0);
 
@@ -420,6 +795,11 @@ pub fn pet_action_eat(
 ) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| e.to_string())?;
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+    let mut work = state.work.lock().map_err(|e| e.to_string())?;
+
+    if work.is_active {
+        work.stop();
+    }
 
     let food = crate::systems::food::find_food(&food_name)
         .ok_or_else(|| format!("未找到食物: {}", food_name))?;
@@ -428,6 +808,7 @@ pub fn pet_action_eat(
         food.strength_drink, food.feeling, food.health, 0.0,
     );
     stats.data.mark_interaction();
+    core.set_state(PetState::Idle);
     core.current_graph_type = food.graph.clone();
     core.set_action_lock(3.0);
 
@@ -455,9 +836,17 @@ pub fn pet_action_play(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_j
 
     stats.data.play();
     stats.data.mark_interaction();
-    // 启动 Play 类型工作 (玩游戏: 收益进经验, 使用专属玩耍动画)
-    let play_work = crate::systems::work::find_work("playone")
-        .ok_or("未找到玩耍工种")?;
+    // 菜单玩耍优先展示 VPet 已有 Play 动画变体，而不是低等级时固定 playone
+    let play_candidates = crate::systems::work::all_works()
+        .into_iter()
+        .filter(|w| w.work_type == crate::systems::work::WorkType::Play)
+        .collect::<Vec<_>>();
+    if play_candidates.is_empty() {
+        return Err("未找到玩耍工种".into());
+    }
+    let index = ((rand::random::<f64>() * play_candidates.len() as f64).floor() as usize)
+        .min(play_candidates.len() - 1);
+    let play_work = play_candidates[index].clone();
     let dur = play_work.duration_secs();
     let work_name = play_work.name.clone();
     let graph_name = play_work.graph.clone();
@@ -570,6 +959,29 @@ pub fn pet_action_work(
     }))
 }
 
+/// 停止当前工作/学习/玩耍，恢复默认动画
+#[tauri::command]
+pub fn pet_action_stop_work(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let mut work = state.work.lock().map_err(|e| e.to_string())?;
+    let was_working = work.is_active;
+    work.stop();
+
+    let mut core = state.core.lock().map_err(|e| e.to_string())?;
+    core.set_action_lock(0.0);
+    core.set_state(PetState::Idle);
+    core.current_graph_type = "default".into();
+
+    let stats = state.stats.lock().map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "stopped": was_working,
+        "working": false,
+        "graphType": "default",
+        "mood": stats.get_mood(),
+        "message": if was_working { "已停止" } else { "当前没有进行中的任务" },
+        "stats": stats_json(&stats.data),
+    }))
+}
+
 /// 获取可选工作类型列表 (来自 VPet 真实工种)
 #[tauri::command]
 pub fn get_work_types() -> Result<Vec<serde_json::Value>, String> {
@@ -593,7 +1005,7 @@ pub fn get_work_types() -> Result<Vec<serde_json::Value>, String> {
 /// 游戏时钟推进 (每秒调用一次)
 #[tauri::command]
 pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-    use crate::systems::work::{WorkingState, WorkType};
+    use crate::systems::work::WorkingState;
 
     let mut core = state.core.lock().map_err(|e| e.to_string())?;
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
@@ -634,18 +1046,8 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
         }
     }
 
-    // 工作计时 (真实时间推进); 完成则发放完成奖励
-    let mut work_finished = false;
-    if let Some(fin) = work.advance(dt_seconds) {
-        let bonus = fin.bonus;
-        match fin.work_type {
-            WorkType::Work => stats.data.money += bonus,
-            _ => stats.data.exp += bonus,
-        }
-        work_finished = true;
-        core.set_action_lock(0.0);
-        core.set_state(PetState::Idle);
-    }
+    // 工作计时只累计运行时间；收益/消耗仍由 FunctionSpend 周期处理。
+    work.advance(dt_seconds);
 
     // 生病自动卧床: 状态为 ill 时切到睡眠动画; 康复后自动唤醒
     // (仅影响生病卧床, 不打断用户手动睡觉)
@@ -685,8 +1087,23 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
         "working": working,
         "stats": stats_json(&stats.data),
         "leveledUp": leveled_up,
-        "workFinished": work_finished,
     }))
+}
+
+fn pick_edge_move_graph(side: &str, speed_px_per_sec: f64) -> String {
+    let roll = rand::random::<f64>();
+    let family = if speed_px_per_sec >= 110.0 {
+        if roll < 0.45 { "fall" } else if roll < 0.75 { "crawl" } else if roll < 0.9 { "climb.top" } else { "climb" }
+    } else if speed_px_per_sec <= 65.0 {
+        if roll < 0.55 { "crawl" } else if roll < 0.85 { "climb" } else { "climb.top" }
+    } else if roll < 0.45 {
+        "climb"
+    } else if roll < 0.75 {
+        "climb.top"
+    } else {
+        "crawl"
+    };
+    format!("move.{}.{}", family, side)
 }
 
 /// 自主行走 tick
@@ -706,6 +1123,7 @@ pub fn walk_tick(
     let mut walk = state.walk.lock().map_err(|e| e.to_string())?;
     let controller = state.controller.lock().map_err(|e| e.to_string())?;
     let work = state.work.lock().map_err(|e| e.to_string())?;
+    let stats = state.stats.lock().map_err(|e| e.to_string())?;
 
     // 如果正在被拖拽或工作中，跳过自主行走
     if core.is_dragging || work.is_active {
@@ -721,8 +1139,25 @@ pub fn walk_tick(
     // 更新朝向
     core.facing_right = walk.direction > 0.0;
 
-    // 使用 WalkSystem 的当前 graph_type (Walking→default, Idle→子行为动画)
-    let graph_type = walk.current_graph_type().to_string();
+    // 使用 VPet 的方向/速度/状态行走资源；非行走时返回闲置子行为
+    let mood = stats.data.get_mood();
+    let edge_hit = raw_dx != 0 && dx != raw_dx;
+    let graph_type = if edge_hit {
+        let side = if raw_dx > 0 { "right" } else { "left" };
+        pick_edge_move_graph(side, walk.speed_px_per_sec)
+    } else if walk.state == crate::systems::walk::WalkState::Walking {
+        let direction = if core.facing_right { "right" } else { "left" };
+        let speed_suffix = if mood == "poorCondition" || mood == "ill" || walk.speed_px_per_sec <= 65.0 {
+            ".slow"
+        } else if walk.speed_px_per_sec >= 110.0 {
+            ".faster"
+        } else {
+            ""
+        };
+        format!("move.walk.{}{}", direction, speed_suffix)
+    } else {
+        walk.current_graph_type().to_string()
+    };
 
     Ok(serde_json::json!({
         "dx": dx,
@@ -730,6 +1165,24 @@ pub fn walk_tick(
         "facingRight": core.facing_right,
         "graphType": graph_type,
         "walking": walk.state == crate::systems::walk::WalkState::Walking,
+        "edgeHit": edge_hit,
+        "speedPxPerSec": walk.speed_px_per_sec,
+    }))
+}
+
+#[tauri::command]
+pub fn reset_walk_state(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let mut core = state.core.lock().map_err(|e| e.to_string())?;
+    let mut walk = state.walk.lock().map_err(|e| e.to_string())?;
+
+    walk.reset_to_idle();
+    core.set_action_lock(0.0);
+    core.set_state(PetState::Idle);
+    core.current_graph_type = "default".into();
+
+    Ok(serde_json::json!({
+        "graphType": "default",
+        "walking": false,
     }))
 }
 
@@ -772,10 +1225,16 @@ pub fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
         }
     }
 
+    // 重新显示并置顶宠物窗口，防止聊天窗口打开后宠物被覆盖或保持隐藏
+    if let Some(pet) = app.get_webview_window("pet") {
+        let _ = pet.show();
+        let _ = pet.set_always_on_top(true);
+    }
+
     let _ = chat.show();
     let _ = chat.set_focus();
 
-    // 重新置顶宠物窗口，防止聊天窗口夺走 z-order
+    // 聊天窗口拿到焦点后再置顶一次宠物，保持桌宠可见
     if let Some(pet) = app.get_webview_window("pet") {
         let _ = pet.set_always_on_top(true);
     }

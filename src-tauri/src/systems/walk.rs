@@ -46,6 +46,14 @@ impl WalkSystem {
         ws
     }
 
+    pub fn reset_to_idle(&mut self) {
+        self.state = WalkState::Idle;
+        self.idle_phase = IdlePhase::Standing;
+        self.speed_px_per_sec = 80.0;
+        self.timer = Self::random_idle_duration();
+        self.idle_timer = Self::random_standing_duration();
+    }
+
     fn random_idle_duration() -> f64 {
         12.0 + rand::random::<f64>() * 18.0  // 12~30s (对标 VPet 15s 间隔)
     }
@@ -81,13 +89,17 @@ impl WalkSystem {
     }
 
     /// 返回当前应该播放的 graph_type
-    /// 注意: 所有闲置阶段都使用 "default" graph (动画选择由 mood/模式决定)
-    /// 仅行走时使用 "move"
     pub fn current_graph_type(&self) -> &str {
         if self.state == WalkState::Walking {
             return "move";
         }
-        "default"
+
+        match self.idle_phase {
+            IdlePhase::Standing => "default",
+            IdlePhase::IdleAnim => "idle",
+            IdlePhase::Think => "think",
+            IdlePhase::Switch => "switch",
+        }
     }
 
     /// 每帧更新，返回建议的窗口位移量 (dx, dy)
@@ -108,6 +120,14 @@ impl WalkSystem {
                     self.state = WalkState::Walking;
                     self.idle_phase = IdlePhase::Standing;
                     self.direction = if rand::random::<bool>() { 1.0 } else { -1.0 };
+                    let speed_roll = rand::random::<f64>();
+                    self.speed_px_per_sec = if speed_roll < 0.20 {
+                        55.0
+                    } else if speed_roll < 0.40 {
+                        125.0
+                    } else {
+                        80.0
+                    };
                     self.timer = Self::random_walk_duration();
                 }
                 (0, 0)

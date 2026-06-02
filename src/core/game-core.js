@@ -14,6 +14,8 @@ class GameCore {
     this.state = PetState.IDLE;
     this.direction = 1;
     this.animTimer = 0;
+    this.currentAnimatType = 'b_loop';
+    this.currentAction = null;
 
     // 行走
     this.targetX = this.x;
@@ -66,6 +68,8 @@ class GameCore {
   resetIdle() {
     this.state = PetState.IDLE;
     this.currentGraphType = 'default';
+    this.currentAnimatType = 'b_loop';
+    this.currentAction = null;
     this.idleDuration = 120 + Math.random() * 180;
     this.idleTimer = 0;
     this.animTimer = 0;
@@ -74,6 +78,8 @@ class GameCore {
   startWalking() {
     this.state = PetState.WALK;
     this.currentGraphType = 'move';
+    this.currentAnimatType = 'b_loop';
+    this.currentAction = null;
     this.targetX = 100 + Math.random() * 300;
     this.targetY = 200 + Math.random() * 200;
     this.walkDuration = 60 + Math.random() * 120;

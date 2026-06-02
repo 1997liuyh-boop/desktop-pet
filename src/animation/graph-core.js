@@ -26,6 +26,11 @@ class GraphCore {
     return anim;
   }
 
+  // 精确查找已缓存动画（不跨阶段回退）
+  findCachedExact(graphType, modeType, animatType) {
+    return this._animCache.get(this._cacheKey(graphType, modeType, animatType)) || null;
+  }
+
   // 查找已缓存的动画（同步）
   findCached(graphType, modeType, animatType) {
     let anim = this._animCache.get(this._cacheKey(graphType, modeType, animatType));
@@ -63,12 +68,30 @@ class GraphCore {
       ['default', 'normal', 'single'],
       ['move', 'normal', 'b_loop'],
       ['sleep', 'normal', 'b_loop'],
+      ['touch_head', 'normal', 'a_start'],
       ['touch_head', 'normal', 'b_loop'],
+      ['touch_head', 'normal', 'c_end'],
+      ['touch_head', 'happy', 'a_start'],
       ['touch_head', 'happy', 'b_loop'],
+      ['touch_head', 'happy', 'c_end'],
+      ['touch_body', 'normal', 'a_start'],
+      ['touch_body', 'normal', 'b_loop'],
+      ['touch_body', 'normal', 'c_end'],
+      ['pinch', 'normal', 'a_start'],
+      ['pinch', 'normal', 'b_loop'],
+      ['pinch', 'normal', 'c_end'],
+      ['music', 'normal', 'a_start'],
+      ['music', 'normal', 'b_loop'],
+      ['music', 'normal', 'c_end'],
+      ['music', 'normal', 'single'],
       ['raise', 'normal', 'b_loop'],
+      ['say', 'normal', 'a_start'],
       ['say', 'normal', 'b_loop'],
+      ['say', 'normal', 'c_end'],
       ['startup', 'normal', 'single'],
+      ['idle', 'normal', 'a_start'],
       ['idle', 'normal', 'b_loop'],
+      ['idle', 'normal', 'c_end'],
     ];
     for (const [gt, mt, at] of common) {
       await this.getAnim(gt, mt, at).catch(() => {});
