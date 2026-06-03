@@ -1,8 +1,9 @@
 // Toolbar - 右键弹出工具栏（对标 VPet ToolBar）
 class Toolbar {
-  constructor(core, actions) {
+  constructor(core, actions, options = {}) {
     this.core = core;
     this.actions = actions || {};
+    this.groups = options.groups || TOOLBAR_GROUPS;
     this.isVisible = false;
 
     this._createDOM();
@@ -27,19 +28,29 @@ class Toolbar {
 
     const actionsEl = document.createElement('div');
     actionsEl.id = 'toolbar-actions';
-    actionsEl.innerHTML = `
-      <button class="tb-btn" data-action="feed">🍖 喂食</button>
-      <button class="tb-btn" data-action="play">⚽ 玩耍</button>
-      <button class="tb-btn" data-action="pinch">🤏 捏脸</button>
-      <button class="tb-btn" data-action="dance">♪ 跳舞</button>
-      <button class="tb-btn" data-action="mischief">! 捣蛋</button>
-      <button class="tb-btn" data-action="work">💼 工作</button>
-      <button class="tb-btn" data-action="chat">💬 聊天</button>
-      <button class="tb-btn" data-action="settings">⚙️ 设置</button>
-    `;
+    actionsEl.innerHTML = this.groups.map((groupId) => this._renderGroup(groupId)).join('');
     this.el.appendChild(actionsEl);
 
     document.getElementById('pet-container').appendChild(this.el);
+  }
+
+  _renderGroup(groupId) {
+    const group = getActionGroup(groupId);
+    const actions = getActionsByGroup(groupId);
+    if (!group || !actions.length) return '';
+
+    return `
+      <div class="tb-group">
+        <div class="tb-group-title"><span>${group.icon}</span>${group.shortLabel}</div>
+        <div class="tb-group-actions">
+          ${actions.map((action) => `
+            <button class="tb-btn" data-action="${action.id}" type="button" title="${action.label}">
+              <span>${action.icon}</span>${action.label}
+            </button>
+          `).join('')}
+        </div>
+      </div>
+    `;
   }
 
   _setupEvents() {
@@ -61,9 +72,12 @@ class Toolbar {
   }
 
   show(x, y) {
-    this.el.style.left = `${Math.min(x, 40)}px`;
-    this.el.style.top = `${Math.min(y, 80)}px`;
     this.el.classList.remove('hidden');
+    const container = document.getElementById('pet-container');
+    const maxLeft = Math.max(8, (container?.clientWidth || 350) - this.el.offsetWidth - 8);
+    const maxTop = Math.max(8, (container?.clientHeight || 400) - this.el.offsetHeight - 8);
+    this.el.style.left = `${clamp(x, 8, maxLeft)}px`;
+    this.el.style.top = `${clamp(y, 8, maxTop)}px`;
     this.isVisible = true;
     this.refreshStats();
   }

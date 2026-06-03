@@ -9,6 +9,7 @@ let settingsPath = '';
 let statsPath = '';
 let apiKeyPath = '';
 let memoryPath = '';
+let inventoryPath = '';
 
 function getSettingsPath() {
   if (!settingsPath) {
@@ -36,6 +37,13 @@ function getStatsPath() {
     statsPath = path.join(app.getPath('userData'), 'pet-stats.json');
   }
   return statsPath;
+}
+
+function getInventoryPath() {
+  if (!inventoryPath) {
+    inventoryPath = path.join(app.getPath('userData'), 'pet-inventory.json');
+  }
+  return inventoryPath;
 }
 
 function loadSettings() {
@@ -108,6 +116,18 @@ function loadMemory() {
 
 function saveMemory(memory) {
   fs.writeFileSync(getMemoryPath(), JSON.stringify(normalizeMemory(memory), null, 2), 'utf-8');
+}
+
+function loadInventory() {
+  try {
+    return JSON.parse(fs.readFileSync(getInventoryPath(), 'utf-8'));
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveInventory(inventory) {
+  fs.writeFileSync(getInventoryPath(), JSON.stringify(inventory || {}, null, 2), 'utf-8');
 }
 
 function compactMemoryItems(items, limit, maxLength = 48) {
@@ -256,6 +276,13 @@ function createTray() {
   const icon = createTrayIcon();
   tray = new Tray(icon);
 
+  const sendAction = (action) => {
+    if (petWindow) {
+      petWindow.show();
+      petWindow.webContents.send('action', action);
+    }
+  };
+
   const contextMenu = Menu.buildFromTemplate([
     {
       label: '显示/隐藏宠物',
@@ -265,26 +292,41 @@ function createTray() {
         }
       },
     },
+    { type: 'separator' },
     {
-      label: '聊天',
-      click: () => {
-        if (petWindow) {
-          petWindow.show();
-          petWindow.webContents.send('action', 'chat');
-        }
-      },
+      label: '学习面板',
+      submenu: [
+        { label: '学书法', click: () => sendAction('study.calligraphy') },
+        { label: '学画画', click: () => sendAction('study.paint') },
+        { label: '看看周围', click: () => sendAction('study.lookAround') },
+        { label: '跳舞', click: () => sendAction('study.dance') },
+      ],
     },
     {
-      label: '喂食',
-      click: () => {
-        if (petWindow) petWindow.webContents.send('action', 'feed');
-      },
+      label: '工作面板',
+      submenu: [
+        { label: '直播', click: () => sendAction('work.live') },
+        { label: '清屏', click: () => sendAction('work.cleanScreen') },
+      ],
     },
     {
-      label: '玩耍',
-      click: () => {
-        if (petWindow) petWindow.webContents.send('action', 'play');
-      },
+      label: '投喂',
+      submenu: [
+        { label: '吃饭', click: () => sendAction('feed.food') },
+        { label: '喝水', click: () => sendAction('feed.water') },
+        { label: '药品', click: () => sendAction('feed.medicine') },
+        { label: '礼品', click: () => sendAction('feed.gift') },
+        { label: '背包', click: () => sendAction('feed.bag') },
+      ],
+    },
+    {
+      label: '互动',
+      submenu: [
+        { label: '玩耍', click: () => sendAction('play') },
+        { label: '捏脸', click: () => sendAction('pinch') },
+        { label: '聊天', click: () => sendAction('chat') },
+        { label: '睡觉', click: () => sendAction('sleep') },
+      ],
     },
     { type: 'separator' },
     {
@@ -383,6 +425,16 @@ ipcMain.on('load-stats', (event) => {
   } catch (e) {
     event.returnValue = null;
   }
+});
+
+ipcMain.on('save-inventory', (event, { inventory }) => {
+  try {
+    saveInventory(inventory);
+  } catch (e) { /* ignore */ }
+});
+
+ipcMain.on('load-inventory', (event) => {
+  event.returnValue = loadInventory();
 });
 
 // ==== LLM Streaming IPC ====
@@ -497,11 +549,14 @@ ipcMain.on('set-window-position', (event, { x, y }) => {
 });
 
 ipcMain.on('set-window-bounds', (event, { x, y, width, height }) => {
-  if (petWindow) {
-    if (x !== undefined && y !== undefined) {
-      petWindow.setBounds({ x: Math.round(x), y: Math.round(y), width: Math.round(width || 200), height: Math.round(height || 250) });
-    }
-  }
+  if (!petWindow) return;
+  const current = petWindow.getBounds();
+  petWindow.setBounds({
+    x: Math.round(x ?? current.x),
+    y: Math.round(y ?? current.y),
+    width: Math.round(width ?? current.width),
+    height: Math.round(height ?? current.height),
+  });
 });
 
 ipcMain.on('get-window-bounds', (event) => {
@@ -536,22 +591,48 @@ ipcMain.on('set-ignore-mouse', (event, ignore) => {
 });
 
 ipcMain.on('show-context-menu', (event) => {
+  const sendAction = (action) => {
+    if (petWindow) {
+      petWindow.show();
+      petWindow.webContents.send('action', action);
+    }
+  };
+
   const menu = Menu.buildFromTemplate([
     {
-      label: '喂食',
-      click: () => petWindow.webContents.send('action', 'feed'),
+      label: '学习面板',
+      submenu: [
+        { label: '学书法', click: () => sendAction('study.calligraphy') },
+        { label: '学画画', click: () => sendAction('study.paint') },
+        { label: '看看周围', click: () => sendAction('study.lookAround') },
+        { label: '跳舞', click: () => sendAction('study.dance') },
+      ],
     },
     {
-      label: '玩耍',
-      click: () => petWindow.webContents.send('action', 'play'),
+      label: '工作面板',
+      submenu: [
+        { label: '直播', click: () => sendAction('work.live') },
+        { label: '清屏', click: () => sendAction('work.cleanScreen') },
+      ],
     },
     {
-      label: '聊天',
-      click: () => petWindow.webContents.send('action', 'chat'),
+      label: '投喂',
+      submenu: [
+        { label: '吃饭', click: () => sendAction('feed.food') },
+        { label: '喝水', click: () => sendAction('feed.water') },
+        { label: '药品', click: () => sendAction('feed.medicine') },
+        { label: '礼品', click: () => sendAction('feed.gift') },
+        { label: '背包', click: () => sendAction('feed.bag') },
+      ],
     },
     {
-      label: '睡觉',
-      click: () => petWindow.webContents.send('action', 'sleep'),
+      label: '互动',
+      submenu: [
+        { label: '玩耍', click: () => sendAction('play') },
+        { label: '捏脸', click: () => sendAction('pinch') },
+        { label: '聊天', click: () => sendAction('chat') },
+        { label: '睡觉', click: () => sendAction('sleep') },
+      ],
     },
     { type: 'separator' },
     {

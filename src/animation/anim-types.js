@@ -54,6 +54,7 @@ const PetState = {
   SLEEP:    'sleep',
   HAPPY:    'happy',
   DRAG:     'drag',
+  DROP:     'drop',
   EAT:      'eat',
   WORK:     'work',
   CHAT:     'chat',
@@ -61,6 +62,7 @@ const PetState = {
   SAY:      'say',
   MUSIC:    'music',
   MISCHIEF: 'mischief',
+  ACTIVITY: 'activity',
 };
 
 const ActivityType = {
@@ -68,6 +70,7 @@ const ActivityType = {
   WORK:  'work',
   STUDY: 'study',
   PLAY:  'play',
+  LIVE:  'work.live',
 };
 
 // 动画描述结构（替代 VPet 的 .lps 配置）

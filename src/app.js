@@ -14,6 +14,7 @@ class DesktopPetApp {
     // === 核心模块 ===
     this.controller = new Controller();
     this.stats = new EnhancedStats();
+    this.inventory = null;
     this.pngLoader = null;
     this.graphCore = null;
     this.core = null;
@@ -63,22 +64,18 @@ class DesktopPetApp {
     this.chatUI = new ChatUI(this.container, this.core, this.llmClient, this.persona, this.messageBar, this.memory);
     this.aiSettings = new AISettings(this.llmClient, this.persona);
 
-    this.toolbar = new Toolbar(this.core, {
-      feed: () => {
-        this.workSystem.stop({ silent: true });
-        this.petLogic.feed();
-      },
-      play: () => this.petLogic.play(),
-      pinch: () => this.petLogic.onPinch(),
-      dance: () => this.petLogic.startDance(false),
-      mischief: () => this.petLogic.startMischief(),
-      work: () => this.workSystem.start(ActivityType.WORK),
-      chat: () => this.chatUI.toggle(),
-      settings: () => this.aiSettings.show(),
+    this.workSystem = new WorkSystem(this.core, this.petLogic);
+    this.inventory = new InventorySystem();
+    this.actionHandlers = this._createActionHandlers();
+
+    this.toolbar = new Toolbar(this.core, this.actionHandlers);
+    this.actionPanel = new ActionPanel(this.core, {
+      actions: this.actionHandlers,
+      inventory: this.inventory,
+      onUseItem: (itemId) => this._useInventoryItem(itemId),
     });
 
     this.sideHide = new SideHide(this.core, this.controller);
-    this.workSystem = new WorkSystem(this.core, this.petLogic);
 
     // 游戏循环
     this.lastTime = performance.now();
@@ -87,6 +84,8 @@ class DesktopPetApp {
     // 鼠标状态
     this.isPotentialDrag = false;
     this.dragStartX = 0; this.dragStartY = 0;
+    this.dragStartTime = 0;
+    this.dragLastX = 0; this.dragLastY = 0; this.dragLastTime = 0;
     this.petStartX = 0; this.petStartY = 0;
     this.hasMoved = false;
 
@@ -123,6 +122,142 @@ class DesktopPetApp {
     } catch (e) { /* ignore */ }
   }
 
+  _createActionHandlers() {
+    const handlers = {};
+    Object.values(ACTION_CATALOG).forEach((action) => {
+      handlers[action.id] = () => this._runAction(action.id);
+    });
+
+    const legacyMap = {
+      feed: 'feed.food',
+      play: 'interaction.play',
+      pinch: 'interaction.pinch',
+      dance: 'study.dance',
+      mischief: 'interaction.mischief',
+      work: 'work.live',
+      live: 'work.live',
+      study: 'study.calligraphy',
+      bag: 'feed.bag',
+      'clean-screen': 'work.cleanScreen',
+      chat: 'system.chat',
+      settings: 'system.settings',
+      sleep: 'system.sleep',
+    };
+
+    Object.entries(legacyMap).forEach(([legacy, actionId]) => {
+      handlers[legacy] = () => this._runAction(actionId);
+    });
+
+    return handlers;
+  }
+
+  _runAction(actionId) {
+    if (actionId === 'strong-dance') {
+      this.petLogic.startDance(true);
+      return true;
+    }
+
+    const action = getActionMeta(actionId);
+    if (!action) return false;
+
+    if (action.kind === 'activity') {
+      this.workSystem.start(action.id);
+      this.actionPanel?.refresh();
+      return true;
+    }
+
+    if (action.kind === 'inventory') {
+      return this._useFirstInventoryType(action);
+    }
+
+    if (action.kind === 'instant') {
+      if (action.id === 'work.cleanScreen') return this._runCleanScreen(action);
+      this.petLogic.performAction(action);
+      this.actionPanel?.refresh();
+      return true;
+    }
+
+    if (action.kind === 'panel' && action.panel === 'bag') {
+      this.actionPanel?.setActiveTab('bag');
+      return true;
+    }
+
+    if (action.kind === 'direct') {
+      return this._runLegacyAction(action.legacyAction);
+    }
+
+    return false;
+  }
+
+  _runLegacyAction(action) {
+    switch (action) {
+      case 'play': this.petLogic.play(); break;
+      case 'pinch': this.petLogic.onPinch(); break;
+      case 'mischief': this.petLogic.startMischief(); break;
+      case 'chat': this.chatUI.toggle(); break;
+      case 'settings': this.aiSettings.show(); break;
+      case 'sleep':
+        this.workSystem.stop({ silent: true });
+        this.petLogic.startSleeping();
+        break;
+      default: return false;
+    }
+    this.actionPanel?.refresh();
+    return true;
+  }
+
+  _useFirstInventoryType(action) {
+    this.workSystem.stop({ silent: true });
+    const result = this.inventory.useFirst(action.itemType, this.stats);
+    if (!result.ok) {
+      this.messageBar.say('背包里没有这个了喵~');
+      this.actionPanel?.setActiveTab('bag');
+      return false;
+    }
+    this.petLogic.performFeedItem(action, result.item);
+    this.actionPanel?.refresh();
+    return true;
+  }
+
+  _useInventoryItem(itemId) {
+    this.workSystem.stop({ silent: true });
+    const result = this.inventory.useItem(itemId, this.stats);
+    if (!result.ok) {
+      this.messageBar.say('这个物品已经没有了喵~');
+      this.actionPanel?.refresh();
+      return false;
+    }
+
+    const action = Object.values(ACTION_CATALOG).find((item) => item.kind === 'inventory' && item.itemType === result.item.type);
+    this.petLogic.performFeedItem(action, result.item);
+    this.actionPanel?.refresh();
+    return true;
+  }
+
+  _runCleanScreen(action) {
+    this.workSystem.stop({ silent: true });
+    this.petLogic.performAction(action);
+    if (action.rewards) {
+      this.stats.applyActivityReward({ rewards: action.rewards });
+      this.petLogic._autoSave();
+    }
+    this._showCleanScreenEffect();
+    this.actionPanel?.refresh();
+    return true;
+  }
+
+  _showCleanScreenEffect() {
+    const old = document.getElementById('clean-screen-effect');
+    if (old) old.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'clean-screen-effect';
+    overlay.innerHTML = '<span>擦擦屏幕中...</span>';
+    this.container.appendChild(overlay);
+    setTimeout(() => overlay.classList.add('done'), 300);
+    setTimeout(() => overlay.remove(), 1400);
+  }
+
   _loadBehaviorSettings() {
     const behavior = loadFromStorage('pet-behavior-settings', { sideHide: true, proactive: true });
     if (!behavior.sideHide) this.sideHide.disable();
@@ -145,6 +280,10 @@ class DesktopPetApp {
           this.isPotentialDrag = true;
           this.dragStartX = e.clientX;
           this.dragStartY = e.clientY;
+          this.dragStartTime = performance.now();
+          this.dragLastX = e.clientX;
+          this.dragLastY = e.clientY;
+          this.dragLastTime = this.dragStartTime;
           this.petStartX = this.core.x;
           this.petStartY = this.core.y;
           this.hasMoved = false;
@@ -163,15 +302,34 @@ class DesktopPetApp {
         if (!this.core.isDragging) {
           this.petLogic.onDragStart();
         }
+
+        const stepX = e.clientX - this.dragLastX;
+        const stepY = e.clientY - this.dragLastY;
+        if (this.core.isDragging) {
+          if (isElectron()) {
+            this.controller.moveWindow(stepX, stepY);
+          } else {
+            this.core.x = clamp(this.petStartX + dx * 1.4, 80, 420);
+            this.core.y = clamp(this.petStartY + dy * 1.4, 120, 440);
+          }
+        }
+        this.dragLastX = e.clientX;
+        this.dragLastY = e.clientY;
+        this.dragLastTime = performance.now();
       }
     });
 
-    window.addEventListener('mouseup', () => {
+    window.addEventListener('mouseup', (e) => {
       if (!this.isPotentialDrag) return;
+      const releaseX = e?.clientX ?? this.dragLastX;
+      const releaseY = e?.clientY ?? this.dragLastY;
+      const distance = Math.hypot(releaseX - this.dragStartX, releaseY - this.dragStartY);
+      const elapsedFrames = Math.max(1, (performance.now() - this.dragStartTime) / 16.67);
+      const speed = distance / elapsedFrames;
       this.isPotentialDrag = false;
       this.canvas.classList.remove('dragging');
       if (this.core.isDragging) {
-        this.petLogic.onDragEnd();
+        this.petLogic.onDragEnd({ distance, speed });
       } else if (!this.hasMoved) {
         // 判断摸头还是摸身体
         const rect = this.canvas.getBoundingClientRect();
@@ -220,16 +378,7 @@ class DesktopPetApp {
   _setupElectronIPC() {
     if (!isElectron()) return;
     window.electronAPI.onAction((action) => {
-      switch (action) {
-        case 'feed': this.petLogic.feed(); break;
-        case 'play': this.petLogic.play(); break;
-        case 'pinch': this.petLogic.onPinch(); break;
-        case 'dance': this.petLogic.startDance(false); break;
-        case 'strong-dance': this.petLogic.startDance(true); break;
-        case 'mischief': this.petLogic.startMischief(); break;
-        case 'sleep': this.petLogic.startSleeping(); break;
-        case 'chat': this.chatUI.toggle(); break;
-      }
+      this._runAction(action);
     });
   }
 
@@ -243,6 +392,7 @@ class DesktopPetApp {
 
     this.petLogic.update();
     this.workSystem.update();
+    this.actionPanel?.refreshProgress();
     this.sideHide.update(dt);
 
     // 播放当前动画

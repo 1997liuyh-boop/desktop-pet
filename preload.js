@@ -45,9 +45,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMemorySummary: () => ipcRenderer.sendSync('get-memory-summary'),
   updateMemoryFromChat: (userText, assistantText) => ipcRenderer.sendSync('update-memory-from-chat', { userText, assistantText }),
 
-  // Stats persistence
+  // Stats and inventory persistence
   saveStats: (stats) => ipcRenderer.send('save-stats', { stats }),
   loadStats: () => ipcRenderer.sendSync('load-stats'),
+  saveInventory: (inventory) => ipcRenderer.send('save-inventory', { inventory }),
+  loadInventory: () => ipcRenderer.sendSync('load-inventory'),
 
   // App path for asset loading
   getAppPath: () => ipcRenderer.sendSync('get-app-path'),

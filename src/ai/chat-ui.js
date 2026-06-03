@@ -4,6 +4,7 @@
 class ChatUI {
   constructor(container, core, llmClient, personaSystem, messageBar, memory) {
     this.container = container;
+    this.root = document.getElementById('app-root') || container;
     this.core = core;
     this.llmClient = llmClient;
     this.persona = personaSystem;
@@ -98,7 +99,7 @@ class ChatUI {
     this.panel.classList.remove('hidden');
     this.panel.classList.add('visible');
     if (isElectron()) this._expandWindow();
-    this.container.classList.add('chat-open');
+    this.root.classList.add('chat-open');
     setTimeout(() => this.inputEl.focus(), 300);
 
     // 更新系统提示词（刷新当前上下文）
@@ -114,7 +115,7 @@ class ChatUI {
     this.panel.classList.add('hidden');
     this.panel.classList.remove('visible');
     if (isElectron()) this._restoreWindow();
-    this.container.classList.remove('chat-open');
+    this.root.classList.remove('chat-open');
   }
 
   toggle() {
