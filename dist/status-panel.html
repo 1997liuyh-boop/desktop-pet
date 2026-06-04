@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>宠物状态</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a1a;
+      color: #e0e0e0;
+      font-family: "Microsoft YaHei", -apple-system, sans-serif;
+      font-size: 13px;
+      padding: 14px 16px 18px;
+      overflow-y: auto;
+      height: 100vh;
+    }
+
+    /* 顶部：名字 + 等级 + 金币 */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .header-name { font-size: 15px; font-weight: bold; color: #fff; }
+    .header-money { font-size: 12px; color: #ffd700; }
+
+    /* 心情状态卡 */
+    .mood-card {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      border-radius: 10px;
+      margin-bottom: 14px;
+      border: 1px solid transparent;
+    }
+    .mood-emoji { font-size: 24px; line-height: 1; }
+    .mood-text { flex: 1; }
+    .mood-label { font-size: 14px; font-weight: bold; line-height: 1.2; }
+    .mood-sub { font-size: 10px; color: #888; margin-top: 3px; }
+    .mood-dot {
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* 经验条 */
+    .section-label {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 4px;
+      font-size: 11px;
+      color: #888;
+    }
+    .exp-val { color: #a78bfa; }
+    .bar-wrap {
+      height: 5px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+    .bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
+
+    /* 属性行 */
+    .stat-list { display: flex; flex-direction: column; gap: 7px; margin-bottom: 14px; }
+    .stat-row { display: flex; align-items: center; gap: 8px; }
+    .stat-name { width: 30px; font-size: 11px; color: #aaa; flex-shrink: 0; }
+    .stat-bar-wrap { flex: 1; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden; }
+    .stat-bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
+    .stat-pct { width: 32px; text-align: right; font-size: 11px; flex-shrink: 0; }
+
+    /* 底部信息行 */
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 0;
+      border-top: 1px solid rgba(255,255,255,0.07);
+      font-size: 11px;
+      color: #888;
+    }
+    .info-val { color: #ccc; }
+    .info-val.pink { color: #f9a8d4; font-weight: bold; }
+
+    .loading { text-align: center; padding: 40px 0; color: #555; font-size: 12px; }
+    .error-msg { text-align: center; padding: 40px 0; color: #f87171; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div id="content"><div class="loading">加载中…</div></div>
+
+  <script src="scripts/runtime.js"></script>
+  <script>
+    const { invoke } = window.PetRuntime;
+
+    const MOOD_ICONS   = { happy: '😊', normal: '😐', poorCondition: '😟', ill: '🤒' };
+    const MOOD_LABELS  = { happy: '开心', normal: '普通', poorCondition: '状态不佳', ill: '生病中' };
+    const MOOD_COLORS  = { happy: '#4ade80', normal: '#94a3b8', poorCondition: '#facc15', ill: '#f87171' };
+    const MOOD_BGS     = {
+      happy:        'rgba(74,222,128,0.12)',
+      normal:       'rgba(148,163,184,0.12)',
+      poorCondition:'rgba(250,204,21,0.12)',
+      ill:          'rgba(248,113,113,0.14)',
+    };
+
+    function statColor(pct) {
+      return pct > 60 ? '#4ade80' : pct > 30 ? '#facc15' : '#f87171';
+    }
+
+    function statRow(label, val) {
+      const pct = Math.max(0, Math.min(100, Math.round(val)));
+      const c   = statColor(pct);
+      return `<div class="stat-row">
+        <span class="stat-name">${label}</span>
+        <div class="stat-bar-wrap">
+          <div class="stat-bar-fill" style="width:${pct}%;background:${c}"></div>
+        </div>
+        <span class="stat-pct" style="color:${c}">${pct}%</span>
+      </div>`;
+    }
+
+    async function load() {
+      try {
+        const [status, config] = await Promise.all([
+          invoke('get_pet_status', {}),
+          invoke('load_llm_config', {}).catch(() => null),
+        ]);
+        const s        = status.stats;
+        const mood     = status.mood || 'normal';
+        const petName  = config?.pet_name || '小橘';
+        const moodColor = MOOD_COLORS[mood] || '#94a3b8';
+
+        // 等级 & 经验 (VPet 公式: LevelUpNeed = 200*lv - 100)
+        const lv         = s.level;
+        const expFloor   = Math.pow((lv - 1) * 10, 2);
+        const expCeil    = Math.pow(lv * 10, 2);
+        const expInLevel = Math.round(s.exp - expFloor);
+        const expToNext  = expCeil - expFloor;
+        const expPct     = Math.min(100, Math.round(expInLevel / expToNext * 100));
+
+        document.getElementById('content').innerHTML = `
+          <div class="header">
+            <span class="header-name">${petName}  &nbsp;<span style="font-size:12px;color:#94a3b8;font-weight:normal">Lv.${lv}</span></span>
+            <span class="header-money">💰 ${s.money.toFixed(0)} 金币</span>
+          </div>
+
+          <div class="mood-card" style="background:${MOOD_BGS[mood]};border-color:${moodColor}44">
+            <span class="mood-emoji">${MOOD_ICONS[mood] || '😐'}</span>
+            <div class="mood-text">
+              <div class="mood-label" style="color:${moodColor}">${MOOD_LABELS[mood] || mood}</div>
+              <div class="mood-sub">当前心情状态</div>
+            </div>
+            <div class="mood-dot" style="background:${moodColor};box-shadow:0 0 8px ${moodColor}"></div>
+          </div>
+
+          <div class="section-label">
+            <span>经验值</span>
+            <span class="exp-val">${expInLevel} / ${expToNext}</span>
+          </div>
+          <div class="bar-wrap">
+            <div class="bar-fill" style="width:${expPct}%;background:#818cf8"></div>
+          </div>
+
+          <div class="stat-list">
+            ${statRow('体力', s.energy)}
+            ${statRow('心情', s.happiness)}
+            ${statRow('饱腹', s.hunger)}
+            ${statRow('口渴', s.thirst)}
+            ${statRow('健康', s.health)}
+          </div>
+
+          <div class="info-row">
+            <span>好感度</span>
+            <span class="info-val pink">${Math.round(s.likability ?? 0)} ❤</span>
+          </div>
+        `;
+      } catch (e) {
+        document.getElementById('content').innerHTML = '<div class="error-msg">加载失败</div>';
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

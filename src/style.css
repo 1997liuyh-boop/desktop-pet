@@ -10,16 +10,16 @@ html, body {
 
 /* === App Root === */
 #app-root {
-  width: 350px; height: 400px;
+  width: 250px; height: 250px;
   position: relative;
   overflow: hidden;
   transition: width 0.3s ease;
 }
 #app-root.chat-open {
-  width: 600px;
+  width: 500px;
 }
 #app-root.chat-open #pet-container {
-  width: 600px;
+  width: 500px;
 }
 #app-root.chat-open #action-panel {
   display: none;
@@ -27,7 +27,7 @@ html, body {
 
 /* === Pet Container === */
 #pet-container {
-  width: 350px; height: 400px;
+  width: 250px; height: 250px;
   position: absolute;
   top: 0; left: 0;
   transition: width 0.3s ease;
@@ -36,7 +36,7 @@ html, body {
 #pet-canvas {
   position: absolute;
   top: 0; left: 0;
-  width: 350px; height: 400px;
+  width: 250px; height: 250px;
   cursor: grab;
 }
 #pet-canvas:active, #pet-canvas.dragging { cursor: grabbing; }

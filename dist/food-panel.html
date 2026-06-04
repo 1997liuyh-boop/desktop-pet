@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>投喂</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a1a;
+      color: #e0e0e0;
+      font-family: "Microsoft YaHei", -apple-system, sans-serif;
+      font-size: 13px;
+      padding: 12px 16px 16px;
+      overflow-y: auto;
+      height: 100vh;
+    }
+    .header-row {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 10px;
+    }
+    h2 { font-size: 15px; color: #fff; }
+    .wallet {
+      font-size: 12px; color: #ffd700;
+      background: rgba(255,215,0,0.1);
+      border: 1px solid rgba(255,215,0,0.25);
+      border-radius: 10px; padding: 3px 9px;
+    }
+    .wallet.low { color: #ff7b7b; border-color: rgba(255,100,100,0.3); background: rgba(255,80,80,0.08); }
+    .group-title { font-size: 12px; color: #ffcf8a; margin: 10px 0 6px; font-weight: bold; }
+    .item-btn {
+      width: 100%; display: flex; flex-direction: column; align-items: stretch;
+      padding: 8px; margin: 3px 0; border-radius: 6px; cursor: pointer;
+      border: 0; background: rgba(255,255,255,0.055); color: #e8e8e8;
+      text-align: left; font-family: inherit; font-size: 12px;
+      transition: background 0.15s;
+    }
+    .item-btn:hover:not(.cannot-afford) { background: rgba(255,255,255,0.13); }
+    .item-btn.cannot-afford {
+      opacity: 0.55; cursor: not-allowed;
+      background: rgba(255,255,255,0.025);
+    }
+    .item-name { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+    .item-name .name { font-weight: bold; }
+    .item-name .price { color: #8be9fd; }
+    .item-name .price.too-expensive { color: #ff7b7b; }
+    .item-effects { font-size: 10px; color: #a9adb5; margin-top: 4px; line-height: 1.35; }
+    .item-effects.cannot-afford { color: #ff9b9b; font-style: italic; }
+    .empty { color: #aaa; font-size: 12px; padding: 20px 0; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="header-row">
+    <h2>选择投喂项目</h2>
+    <span class="wallet" id="wallet-display">💰 --</span>
+  </div>
+  <div id="food-list"></div>
+  <div class="empty" id="empty-msg" style="display:none">没有可用项目</div>
+
+  <script src="scripts/runtime.js"></script>
+  <script>
+    const { invoke } = window.PetRuntime;
+    const listEl = document.getElementById('food-list');
+    const emptyEl = document.getElementById('empty-msg');
+    const walletEl = document.getElementById('wallet-display');
+    let currentMoney = Infinity; // 加载前不限制
+
+    async function init() {
+      try {
+        const filter = window.__foodFilter || null;
+        listEl.innerHTML = '';
+        emptyEl.style.display = 'none';
+
+        // 并行加载食物列表和当前金币
+        const [data, status] = await Promise.all([
+          invoke('get_food_menu', {}),
+          invoke('get_pet_status', {}).catch(() => null),
+        ]);
+
+        currentMoney = Number(status?.stats?.money ?? Infinity);
+        if (isFinite(currentMoney)) {
+          walletEl.textContent = `💰 ${currentMoney.toFixed(0)} 金币`;
+          walletEl.className = 'wallet' + (currentMoney < 20 ? ' low' : '');
+        }
+
+        const allItems = (data && data.items) ? data.items : [];
+        const items = filter ? allItems.filter(it => it.graph === filter) : allItems;
+
+        if (!items.length) { emptyEl.style.display = 'block'; return; }
+
+        const groups = {};
+        items.forEach(it => {
+          const g = it.graph === 'medicine' ? '药品' : it.graph === 'drink' ? '饮品' : '食物';
+          if (!groups[g]) groups[g] = [];
+          groups[g].push(it);
+        });
+
+        Object.entries(groups).forEach(([group, list]) => {
+          const gt = document.createElement('div');
+          gt.className = 'group-title';
+          gt.textContent = group;
+          listEl.appendChild(gt);
+
+          list.forEach(it => {
+            const canAfford = currentMoney >= it.price;
+            const btn = document.createElement('button');
+            btn.className = 'item-btn' + (canAfford ? '' : ' cannot-afford');
+
+            const nameLine = document.createElement('div');
+            nameLine.className = 'item-name';
+            const nm = document.createElement('span');
+            nm.className = 'name'; nm.textContent = it.name;
+            const pr = document.createElement('span');
+            pr.className = 'price' + (canAfford ? '' : ' too-expensive');
+            pr.textContent = `¥${it.price}`;
+            nameLine.appendChild(nm);
+            nameLine.appendChild(pr);
+
+            const eff = document.createElement('div');
+            eff.className = 'item-effects' + (canAfford ? '' : ' cannot-afford');
+            if (!canAfford) {
+              eff.textContent = `金币不足（差 ${(it.price - currentMoney).toFixed(0)} 金币）`;
+            } else {
+              const isMed = it.graph === 'medicine';
+              const parts = [];
+              if (isMed && it.health) {
+                parts.push(`🩺 健康+${it.health.toFixed(0)}`);
+              } else {
+                if (it.strengthFood) parts.push(`饱腹${it.strengthFood > 0 ? '+' : ''}${it.strengthFood}`);
+                if (it.strengthDrink) parts.push(`口渴${it.strengthDrink > 0 ? '+' : ''}${it.strengthDrink}`);
+                if (it.strength) parts.push(`体力${it.strength > 0 ? '+' : ''}${it.strength}`);
+                if (it.feeling) parts.push(`心情${it.feeling > 0 ? '+' : ''}${it.feeling}`);
+                if (it.health) parts.push(`健康${it.health > 0 ? '+' : ''}${it.health}`);
+                if (it.exp) parts.push(`经验${it.exp > 0 ? '+' : ''}${it.exp}`);
+              }
+              eff.textContent = parts.join('  ') || '无属性变化';
+            }
+
+            btn.appendChild(nameLine);
+            btn.appendChild(eff);
+
+            if (canAfford) {
+              btn.addEventListener('click', async () => {
+                await window.PetRuntime.emit('food-selected', { name: it.name, graph: it.graph });
+                setTimeout(() => window.PetRuntime.currentWindow().close(), 100);
+              });
+            }
+
+            listEl.appendChild(btn);
+          });
+        });
+      } catch (e) { emptyEl.textContent = '加载失败'; emptyEl.style.display = 'block'; }
+    }
+
+    init();
+  </script>
+</body>
+</html>

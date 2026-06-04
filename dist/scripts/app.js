@@ -12,13 +12,57 @@ const MUSIC_RELEASE_MS = 3000;
 const MUSIC_POLL_MS = 1000;
 const MISCHIEF_MIN_MS = 25000;
 const MISCHIEF_MAX_MS = 45000;
-const PROACTIVE_AI_MIN_MS = 90000;
-const PROACTIVE_AI_CONTEXT_MIN_MS = 180000;
+const CHATTER_AI_INTERVAL_MS = 20000;
+const CHATTER_TOPICS = [
+  '诗歌和晚风', '人生和远方', '今天的小确幸', '桌面上的宇宙',
+  '给主人一句鼓励', '猫猫式哲学', '季节、天气和心情',
+  '梦境和现实的边界', '喜欢的颜色和声音', '窗外的世界在想什么',
+  '关于时间流逝的感受', '一个让我温暖的瞬间', '如果我能冒险去哪里',
+  '食物和幸福的关系', '慢慢长大这件事', '夜晚特别安静的原因',
+  '对明天的一个小期待', '世界上最有趣的事', '努力和好好休息',
+  '心情今天像什么颜色', '最想去的一个地方', '最近感悟到的一件事',
+  '下雨天适合做什么', '月亮和孤独', '小动物的世界观',
+  '什么是真正的快乐', '星星和灯光哪个更好看', '如果能变成一朵云',
+  '记忆里最香的味道', '一首适合现在的歌', '慢慢变好这件事',
+];
+const MOUSE_LONG_PRESS_MS = 300;
+const MOUSE_DRAG_THRESHOLD_PX = 3;
+const PROACTIVE_AI_MIN_MS = 20000;
+const PROACTIVE_AI_CONTEXT_MIN_MS = 60000;
 const PROACTIVE_SCENE_AI_MIN_MS = 45000;
 const PROACTIVE_SCENE_CONTEXT_MIN_MS = 90000;
 const PROACTIVE_IDLE_MS = 180000;
 const PROACTIVE_SOFT_IDLE_MS = 90000;
-const PROACTIVE_SPEECH_MAX_CHARS = 48;
+const PROACTIVE_SPEECH_MAX_CHARS = 72;
+
+// ── TTS 音频播放 ──
+function playBase64Wav(base64) {
+  try {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const doPlay = (buffer) => {
+      const source = audioCtx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioCtx.destination);
+      source.start(0);
+      source.onended = () => audioCtx.close().catch(() => {});
+    };
+    const decode = () => {
+      audioCtx.decodeAudioData(bytes.buffer.slice(0), doPlay,
+        (e) => { console.warn('TTS 解码失败:', e); audioCtx.close().catch(() => {}); });
+    };
+    // WebView2/Chrome 可能在无用户手势时挂起 AudioContext，先 resume 再播
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().then(decode).catch(() => { decode(); });
+    } else {
+      decode();
+    }
+  } catch (e) {
+    console.warn('TTS 播放失败:', e);
+  }
+}
 
 // ── 帧缓存 ──
 const frameCache = new Map(); // path → Image
@@ -166,17 +210,15 @@ class AnimationPlayer {
       }
     }
 
-    // 食物中间层关键帧推进 (单次播放, 播完定格在最后一帧)
-    if (this.foodKeyframes.length > 0 && !this.foodDone) {
+    // 食物中间层关键帧推进 (随 b_loop 持续循环，保证每次张口都能看到食物)
+    if (this.foodKeyframes.length > 0) {
       this.foodAccumulator += dt;
       let kf = this.foodKeyframes[this.foodIndex];
       while (kf && this.foodAccumulator >= kf.time) {
         this.foodAccumulator -= kf.time;
         this.foodIndex++;
         if (this.foodIndex >= this.foodKeyframes.length) {
-          this.foodIndex = this.foodKeyframes.length - 1;
-          this.foodDone = true;
-          break;
+          this.foodIndex = 0; // 循环回头，不再定格
         }
         kf = this.foodKeyframes[this.foodIndex];
       }
@@ -211,6 +253,16 @@ class AnimationPlayer {
       // c_end 播完
       this.isPlaying = false;
       if (this.onComplete) this.onComplete();
+    }
+  }
+
+  // 直接跳到 b_loop (用于拖拽等需要跳过 a_start 的场景)
+  goToLoop() {
+    if (this.phases.b_loop.length > 0) {
+      this.currentPhase = 'b_loop';
+      this.currentIndex = 0;
+      this.accumulator = 0;
+      this._updateCurrentFrame();
     }
   }
 
@@ -259,7 +311,6 @@ class ToolBar {
     this.app = app;
     this.visible = false;
     this._submenuEl = null;
-    this._panelEl = null;
     this._build();
   }
 
@@ -287,7 +338,7 @@ class ToolBar {
 
     const cols = [
       { id: 'feed',    label: '投喂',  hasSub: true },
-      { id: 'panel',   label: '面板',  hasSub: false, hover: true },
+      { id: 'panel',   label: '面板',  hasSub: false },
       { id: 'interact',label: '互动',  hasSub: true },
       { id: 'diy',     label: '自定',  hasSub: false },
       { id: 'system',  label: '系统',  hasSub: true },
@@ -316,12 +367,11 @@ class ToolBar {
         else if (col.id === 'interact') { this._showInteractSub(tab); }
         else if (col.id === 'system') { this._showSystemSub(tab); }
         else if (col.id === 'diy') { this.app.showBubble('暂无自定功能', 1500); }
-        else if (col.id === 'panel') { /* hover 触发 */ }
+        else if (col.id === 'panel') { this._showPanel(); }
       });
 
-      if (col.hover) {
-        tab.addEventListener('mouseenter', () => { this._showPanel(tab); });
-        tab.addEventListener('mouseleave', () => { this._hidePanel(); });
+      if (col.id === 'panel') {
+        tab.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); this._showPanel(); });
       }
 
       this.el.appendChild(tab);
@@ -348,150 +398,109 @@ class ToolBar {
     this.visible = false;
     this.el.style.display = 'none';
     this._hideSubmenu();
-    this._hidePanel();
     this.app._toolbarActive = false;
   }
 
   // ── 子菜单 ──
 
-  _showFeedSub(anchor) {
-    this._showSubmenu(anchor, [
-      { label: '🍱 食物菜单', action: () => this._showFoodMenu(anchor) },
-      { label: '🍚 随机吃', action: () => this.app._handleFeed() },
-      { label: '🥤 随机喝', action: () => this.app._handleDrink() },
-    ]);
-  }
-
-  // 食物菜单弹窗 — 按 食物 / 饮料 分组列出全部可吃条目及其效果
-  async _showFoodMenu(anchor) {
-    this._hideSubmenu();
-    let data;
-    try {
-      data = await invoke('get_food_menu', {});
-    } catch (_) {
-      this.app.showBubble('菜单加载失败', 1500);
-      return;
-    }
-    const items = (data && data.items) ? data.items : [];
-    const foods = items.filter(it => it.graph === 'eat');
-    const drinks = items.filter(it => it.graph === 'drink');
-
-    // 遮罩层 — 点击空白处关闭
+  _createCompactModal(titleText) {
     const mask = document.createElement('div');
     Object.assign(mask.style, {
       position: 'fixed', inset: '0', zIndex: '10000',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'rgba(0,0,0,0.35)',
+      background: 'rgba(0,0,0,0.30)',
+      padding: '8px',
     });
 
-    // 弹窗主体
     const panel = document.createElement('div');
     Object.assign(panel.style, {
-      width: '420px', maxHeight: '70vh', overflowY: 'auto',
+      width: 'min(232px, calc(100vw - 16px))',
+      maxHeight: 'calc(100vh - 58px)',
+      overflowY: 'auto',
       background: 'rgba(24,24,28,0.97)',
-      border: '1px solid rgba(255,255,255,0.15)',
-      borderRadius: '10px', padding: '14px 16px',
-      fontFamily: '"Microsoft YaHei", sans-serif', color: '#e0e0e0',
-      boxShadow: '0 6px 32px rgba(0,0,0,0.6)', backdropFilter: 'blur(12px)',
+      border: '1px solid rgba(255,255,255,0.16)',
+      borderRadius: '8px',
+      padding: '10px',
+      fontFamily: '"Microsoft YaHei", sans-serif',
+      color: '#e8e8e8',
+      boxShadow: '0 8px 28px rgba(0,0,0,0.55)',
+      backdropFilter: 'blur(12px)',
     });
     panel.addEventListener('mousedown', (e) => e.stopPropagation());
 
-    // 标题栏 + 关闭按钮
     const header = document.createElement('div');
     Object.assign(header.style, {
       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-      marginBottom: '10px',
+      marginBottom: '8px', gap: '8px',
     });
     const title = document.createElement('div');
-    title.textContent = '🍱 食物菜单';
-    Object.assign(title.style, { fontSize: '16px', fontWeight: 'bold' });
-    const closeBtn = document.createElement('div');
-    closeBtn.textContent = '✕';
-    Object.assign(closeBtn.style, { cursor: 'pointer', fontSize: '14px', padding: '2px 6px', color: '#aaa' });
+    title.textContent = titleText;
+    Object.assign(title.style, { fontSize: '13px', fontWeight: 'bold' });
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = '×';
+    Object.assign(closeBtn.style, {
+      cursor: 'pointer', fontSize: '16px', lineHeight: '1', color: '#bbb',
+      background: 'transparent', border: '0', padding: '2px 4px',
+    });
     closeBtn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); mask.remove(); });
     header.appendChild(title);
     header.appendChild(closeBtn);
     panel.appendChild(header);
 
-    // 渲染一个分组
-    const renderGroup = (groupTitle, list) => {
-      if (!list.length) return;
-      const gt = document.createElement('div');
-      gt.textContent = groupTitle;
-      Object.assign(gt.style, {
-        fontSize: '13px', color: '#ffb86c', margin: '8px 0 4px', fontWeight: 'bold',
-      });
-      panel.appendChild(gt);
-
-      list.forEach(it => {
-        const row = document.createElement('div');
-        Object.assign(row.style, {
-          display: 'flex', flexDirection: 'column',
-          padding: '7px 10px', margin: '3px 0',
-          borderRadius: '6px', cursor: 'pointer',
-          background: 'rgba(255,255,255,0.04)',
-        });
-        row.addEventListener('mouseenter', () => { row.style.background = 'rgba(255,255,255,0.12)'; });
-        row.addEventListener('mouseleave', () => { row.style.background = 'rgba(255,255,255,0.04)'; });
-
-        const nameLine = document.createElement('div');
-        Object.assign(nameLine.style, { display: 'flex', justifyContent: 'space-between', fontSize: '13px' });
-        const nm = document.createElement('span');
-        nm.textContent = it.name;
-        nm.style.fontWeight = 'bold';
-        const pr = document.createElement('span');
-        pr.textContent = '¥' + it.price;
-        pr.style.color = '#8be9fd';
-        nameLine.appendChild(nm);
-        nameLine.appendChild(pr);
-
-        // 效果明细 — 仅显示非零项
-        const eff = document.createElement('div');
-        Object.assign(eff.style, { fontSize: '11px', color: '#9aa0a6', marginTop: '3px' });
-        const parts = [];
-        const push = (label, val) => { if (val) parts.push(`${label}${val > 0 ? '+' : ''}${val}`); };
-        push('饱腹', it.strengthFood);
-        push('口渴', it.strengthDrink);
-        push('体力', it.strength);
-        push('心情', it.feeling);
-        push('健康', it.health);
-        push('经验', it.exp);
-        eff.textContent = parts.join('  ');
-
-        row.appendChild(nameLine);
-        row.appendChild(eff);
-        row.addEventListener('mousedown', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          mask.remove();
-          this.app._handleEatFood(it.name);
-        });
-        panel.appendChild(row);
-      });
-    };
-
-    renderGroup('🍚 食物', foods);
-    renderGroup('🥤 饮料', drinks);
-
     mask.addEventListener('mousedown', () => mask.remove());
     document.body.appendChild(mask);
     mask.appendChild(panel);
+    this.app._stopUiPointerEvents(mask);
+    return { mask, panel };
+  }
+
+  _showFeedSub(anchor) {
+    const items = [
+      { label: '食物',   action: () => this._showFoodMenu('eat') },
+      { label: '饮品',   action: () => this._showFoodMenu('drink') },
+      { label: '全部投喂', action: () => this._showFoodMenu() },
+      { label: '随机吃', action: () => { this.hide(); this.app._handleFeed(); } },
+      { label: '随机喝', action: () => { this.hide(); this.app._handleDrink(); } },
+    ];
+    // 生病时才显示药品入口
+    if (this.app.mode === 'ill') {
+      items.unshift({ label: '🩺 药品', action: () => this._showFoodMenu('medicine') });
+    }
+    this._showSubmenu(anchor, items);
+  }
+
+  // 食物菜单 — 打开独立弹窗
+  async _showFoodMenu(graphFilter = null) {
+    this._hideSubmenu();
+    try {
+      await invoke('open_food_panel', { filter: graphFilter });
+    } catch (_) {
+      this.app.showBubble('菜单打开失败', 1500);
+    }
+  }
+
+  // 工作面板 — 打开独立弹窗
+  async _showWorkPanel(kind) {
+    this._hideSubmenu();
+    try {
+      await invoke('open_work_panel', { kind: kind || 'work' });
+    } catch (_) {
+      this.app.showBubble('面板打开失败', 1500);
+    }
   }
 
   _showInteractSub(anchor) {
     const items = [
-      { label: '😴 睡觉', action: () => this._handleSleep() },
-      { label: '👆 戳脸', action: () => this.app._handlePinch() },
-      { label: '📖 学习', action: () => this.app._handleWork('study') },
-      { label: '💼 打工', action: () => this.app._handleWork('work') },
-      { label: '🧹 打扫', action: () => this.app._handleWork('clean') },
-      { label: '🎨 绘画', action: () => this.app._handleWork('painting') },
-      { label: '🎮 玩耍', action: () => this.app._handlePlay() },
+      { label: '睡觉', action: () => this._handleSleep() },
+      { label: '戳脸', action: () => { this.hide(); this.app._handlePinch(); } },
+      { label: '玩耍面板', action: () => this._showWorkPanel('play') },
+      { label: '工作面板', action: () => this._showWorkPanel('work') },
     ];
     if (this.app._wasWorking) {
-      items.push({ label: '⏹ 停止', action: () => this.app._handleStopWork() });
+      items.push({ label: '停止任务', action: () => { this.hide(); this.app._handleStopWork(); } });
     }
-    items.push({ label: '💬 聊天', action: () => this.app._openChat() });
+    items.push({ label: '聊天', action: () => { this.hide(); this.app._openChat(); } });
     this._showSubmenu(anchor, items);
   }
 
@@ -508,8 +517,8 @@ class ToolBar {
     menu.className = 'tb-submenu';
     Object.assign(menu.style, {
       position: 'fixed',
-      bottom: '48px',
-      left: anchor.getBoundingClientRect().left + 'px',
+      bottom: '46px',
+      left: Math.min(anchor.getBoundingClientRect().left, Math.max(6, window.innerWidth - 126)) + 'px',
       zIndex: '9999',
       background: 'rgba(20,20,20,0.95)',
       border: '1px solid rgba(255,255,255,0.15)',
@@ -554,73 +563,39 @@ class ToolBar {
     }
   }
 
-  // ── 状态面板 (hover) ──
+  // ── 状态面板弹窗 — 独立 Tauri 窗口 ──
 
-  async _showPanel(anchor) {
-    this._hidePanel();
+  async _showPanel() {
     try {
-      const status = await invoke('get_pet_status', {});
-      const s = status.stats;
-      const panel = document.createElement('div');
-      panel.className = 'tb-panel';
-      Object.assign(panel.style, {
-        position: 'fixed',
-        bottom: '48px',
-        left: anchor.getBoundingClientRect().left + 'px',
-        zIndex: '9999',
-        background: 'rgba(20,20,20,0.95)',
-        border: '1px solid rgba(255,255,255,0.15)',
-        borderRadius: '8px',
-        padding: '10px 14px',
-        minWidth: '160px',
-        fontFamily: '"Microsoft YaHei", sans-serif',
-        fontSize: '12px',
-        color: '#d0d0d0',
-        boxShadow: '0 2px 16px rgba(0,0,0,0.5)',
-      });
+      await invoke('open_status_panel', {});
+    } catch (_) {
+      this.app.showBubble('面板打开失败', 1500);
+    }
+  }
 
-      const interaction = this.app._lastInteractionSummary;
-      const interactionTypeNames = {
-        touch: '触摸', pinch: '戳脸', drag: '拖拽', feed: '喂食', drink: '喝水',
-        play: '玩耍', work: '任务', chat: '聊天',
-      };
-      const interactionMoodNames = {
-        calm: '平静', happy: '开心', playful: '想玩', annoyed: '有点烦', satisfied: '满足',
-        companied: '被陪伴', excited: '兴奋', startled: '受惊', focused: '专注',
-      };
-      const lastInteractionText = interaction
-        ? `${interactionTypeNames[interaction.type] || interaction.type}${interaction.label ? ` · ${interaction.label}` : ''}`
-        : '暂无';
+  _statRow(label, val) {
+    const pct = Math.max(0, Math.min(100, Math.round(val)));
+    const color = pct > 60 ? '#4ade80' : pct > 30 ? '#facc15' : '#f87171';
+    return `<div style="display:flex;align-items:center;gap:8px">
+      <span style="width:28px;font-size:11px;color:#aaa;flex-shrink:0">${label}</span>
+      <div style="flex:1;height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden">
+        <div style="width:${pct}%;height:100%;background:${color};border-radius:3px"></div>
+      </div>
+      <span style="width:28px;text-align:right;font-size:11px;color:${color}">${pct}%</span>
+    </div>`;
+  }
 
-      const rows = [
-        `等级: Lv.${s.level}  | 金币: 💰${s.money.toFixed(1)}`,
-        `经验: ${s.exp}/${s.level * 100}`,
-        `体力: ${this._bar(s.energy)}`,
-        `心情: ${this._bar(s.happiness)}`,
-        `饱腹: ${this._bar(s.hunger)}`,
-        `口渴: ${this._bar(s.thirst)}`,
-        `健康: ${this._bar(s.health)}`,
-        `互动: ${lastInteractionText}`,
-        `互动情绪: ${interactionMoodNames[this.app._interactionMood] || this.app._interactionMood}`,
-      ];
-      panel.innerHTML = rows.map(r => `<div style="margin:3px 0">${r}</div>`).join('');
-
-      document.body.appendChild(panel);
-      this._panelEl = panel;
-      this.app._stopUiPointerEvents(panel);
-    } catch (_) {}
+  _barHtml(pct, color = '#4ade80') {
+    const p = Math.max(0, Math.min(100, Math.round(pct)));
+    return `<div style="height:4px;background:rgba(255,255,255,0.1);border-radius:2px;overflow:hidden">
+      <div style="width:${p}%;height:100%;background:${color};border-radius:2px"></div>
+    </div>`;
   }
 
   _bar(val) {
+    // 纯文本备用 (暂不使用)
     const n = Math.round(val / 10);
     return '█'.repeat(n) + '░'.repeat(10 - n) + ` ${val.toFixed(0)}%`;
-  }
-
-  _hidePanel() {
-    if (this._panelEl) {
-      this._panelEl.remove();
-      this._panelEl = null;
-    }
   }
 
   // ── 睡觉 ──
@@ -681,9 +656,21 @@ class DesktopPetApp {
     this._dragging = false;
     this._dragStartX = 0;
     this._dragStartY = 0;
+    this._dragLastDx = 0;
+    this._dragReleaseTimer = null;
     this._pressStartTime = 0;
+    this._pressTimer = null;
+    this._pressPart = null;
+    this._pressStartLogical = { x: 0, y: 0 };
+    this._raiseHoldActive = false;
     this._lastClickTime = 0;       // 点击防抖
     this._hoveredPart = null;  // 'head' | 'body' | null
+    this._waveTimes = 0;
+    this._waveSwitchCount = 0;
+    this._waveLeft = null;
+    this._waveTop = null;
+    this._waveLastAt = 0;
+    this._waveCooldownUntil = 0;
     this._interactionHistory = [];
     this._lastInteractionAt = 0;
     this._lastProactiveAt = 0;
@@ -713,8 +700,16 @@ class DesktopPetApp {
     this._auxWindowActive = false;  // 聊天/设置窗口打开时禁止侧边隐藏/行走
     this._auxWindowTimer = null;    // 辅助窗口可见状态轮询
     this._wasWorking = false;      // 工作/学习/玩耍持续态
+    this._currentWorkContext = null;
+    this._resumeWorkTimer = null;
+    this._feedingGraph = null;
     this._manifestAnimations = new Set();
     this._musicTimer = null;
+    this._chatterTimer = null;
+    this._chatterBusy = false;
+    this._illCoughTimer = null;
+    this._chatterTopicIndex = Math.floor(Math.random() * CHATTER_TOPICS.length);
+    this._chatterHistory = [];  // 话痨模式专用历史，用于防重复
     this._musicActive = false;
     this._musicAboveSince = 0;
     this._musicLastSeenAt = 0;
@@ -724,6 +719,14 @@ class DesktopPetApp {
     this._mischiefBusy = false;
     this._nextMischiefAt = 0;
     this._lastRenderImage = null;
+    this._thinkingBubble = null; // LLM 等待中的思考气泡元素
+    this._thinkingTimer = null;  // 思考点点计时器
+
+    // 心情追踪 (用于心情变化通知)
+    this._prevMood = 'normal';
+    this._lastMoodChangeAt = performance.now(); // 启动时给 60s 缓冲，防止误报
+    // 各属性低值警告冷却时间戳 { key: performance.now() }
+    this._lastStatWarningAt = {};
 
     // UI 面板
     this.chatUI = new ChatUI(this);
@@ -773,14 +776,14 @@ class DesktopPetApp {
           if (result.working) {
             if (this._musicActive) this._stopMusicDance({ restore: false });
             this._mischiefBusy = false;
-            // 工作期间维持该工种专属动画 (study / workone / playone ...)
             this._wasWorking = true;
-            if (result.graphType && this.graphType !== result.graphType && !this._manualAnimLock) {
-              this.playAnimation(result.graphType, result.mood || 'normal');
+            this._rememberWorkContext(result);
+            if (result.graphType && this.graphType !== result.graphType && !this._manualAnimLock && !this._toolbarActive) {
+              this.playAnimation(result.graphType, result.mood || 'normal', null, { ambient: true });
             }
             if (Math.random() < 0.015) {
-              const activeType = result.graphType === 'playone' ? 'play' : 'work';
-              this._speakProactive({ type: activeType, label: result.graphType || '当前任务' }, {
+              const activeType = this._currentWorkContext?.speechType || 'work';
+              this._speakProactive({ type: activeType, label: this._currentWorkContext?.name || result.graphType || '当前任务' }, {
                 fallbackWhenBlocked: false,
                 fallbackWhenUnavailable: false,
                 minIntervalMs: 240000,
@@ -790,28 +793,84 @@ class DesktopPetApp {
           } else {
             if (this._wasWorking) {
               this._wasWorking = false;
+              this._currentWorkContext = null;
               this._manualAnimLock = false;
               if (this._manualAnimTimer) { clearTimeout(this._manualAnimTimer); this._manualAnimTimer = null; }
               this.playAnimation('default', result.mood || 'normal');
             }
-            // 非工作状态下只同步心情，不让后端状态 tick 抢走当前行走/手动动画
             if (result.mood && result.mood !== this.mode && !this._manualAnimLock && !this._musicActive && !this._mischiefBusy) {
+              const prevMode = this.mode;
               this.mode = result.mood;
               if (this.graphType === 'default') {
                 this.playAnimation('default', result.mood, null, { ambient: true });
               }
+              // 进入/离开生病模式时启停咳嗽调度
+              if (result.mood === 'ill' && prevMode !== 'ill') {
+                this._startIllCough();
+              } else if (result.mood !== 'ill' && prevMode === 'ill') {
+                this._stopIllCough();
+              }
             }
           }
-          if (result.leveledUp) this.showBubble('升级啦!', 3000);
+          if (result.completedWork?.message) this.showBubble(result.completedWork.message, 4000);
+          if (result.leveledUp) {
+            const lv = result.stats?.level;
+            this.showBubble(lv ? `升级啦！现在是 Lv.${lv}！` : '升级啦！', 3500);
+          }
+          // 心情变化通知 (60s 冷却, 不在工作/交互锁期间打断)
+          if (result.mood && result.mood !== this._prevMood) {
+            const now = performance.now();
+            if (now - this._lastMoodChangeAt > 60000 && !this._manualAnimLock && !this._wasWorking) {
+              const moodMsgs = {
+                happy: '今天心情很好喵~',
+                normal: '感觉好多了。',
+                poorCondition: '唔...有点难受...',
+                ill: '我好像生病了，呜呜...',
+              };
+              const msg = moodMsgs[result.mood];
+              if (msg) { this.showBubble(msg, 3000); this._lastMoodChangeAt = now; }
+            }
+            this._prevMood = result.mood;
+          }
         }).catch(() => {});
 
         tickCount++;
         if (tickCount % 5 === 0) {
           invoke('get_pet_status', {}).then((s) => {
-            if (s.stats) {
-              const h = s.stats.hunger;
-              if (h < 20) this.showBubble('好饿...', 2000);
-              else if (h < 10) this.showBubble('要饿死了喵!', 3000);
+            if (!s.stats) return;
+            const now = performance.now();
+            const st = s.stats;
+            const warn = (key, msg, dur, cd = 25000) => {
+              if (!this._lastStatWarningAt[key] || now - this._lastStatWarningAt[key] > cd) {
+                this.showBubble(msg, dur);
+                this._lastStatWarningAt[key] = now;
+              }
+            };
+            // 优先级: 生病 > 健康 > 饱腹 > 口渴 > 体力
+            if (s.mood === 'ill') {
+              warn('ill', '身体很难受，需要好好休息...', 3000, 30000);
+            } else if (st.health < 20) {
+              warn('health', '健康值很低了...要照顾好自己', 2500, 25000);
+            } else if (st.hunger < 10) {
+              warn('hunger_crit', '要饿死了喵！', 3000, 20000);
+            } else if (st.thirst < 10) {
+              warn('thirst_crit', '好渴啊...快给我水喝！', 3000, 20000);
+            } else if (st.hunger < 20) {
+              warn('hunger', '好饿...', 2000, 20000);
+            } else if (st.thirst < 20) {
+              warn('thirst', '有点渴了...', 2000, 20000);
+            } else if (st.energy < 15 && !this._wasWorking && !this._manualSleepMode) {
+              warn('energy', '好累啊，想睡一觉...', 2000, 30000);
+            }
+          }).catch(() => {});
+        }
+        // 作业进度每 30 秒提示一次
+        if (tickCount % 30 === 0 && this._wasWorking) {
+          invoke('get_pet_status', {}).then((s) => {
+            const work = s?.work;
+            if (work?.isActive && work?.name) {
+              const pct = Math.round((work.progress || 0) * 100);
+              this.showBubble(`${work.name} 进行中... ${pct}%`, 2000);
             }
           }).catch(() => {});
         }
@@ -826,7 +885,33 @@ class DesktopPetApp {
           this._markChatActive(Math.max(12000, e.payload.length * 80));
           this._recordInteraction('chat', { label: 'reply', duration: 1200 });
           this.showBubble(e.payload, Math.max(3000, e.payload.length * 80));
+          this._ttsSpeak(e.payload);
         }
+      }).catch(() => {});
+
+      // 监听食物面板选择, 在宠物上播放吃饭动画
+      window.PetRuntime.listen('food-selected', (e) => {
+        if (e.payload) {
+          const p = e.payload;
+          if (p.name) this._handleEatFood(p.name, p.graph);
+        }
+      }).catch(() => {});
+
+      // 监听工作面板选择, 在宠物上播放工作动画
+      window.PetRuntime.listen('work-selected', (e) => {
+        if (e.payload) {
+          const p = e.payload;
+          if (p.action === 'stop') this._handleStopWork();
+          else if (p.action === 'start') {
+            if (p.type === 'Play') this._handlePlay(p.graph);
+            else this._handleWork(p.graph);
+          }
+        }
+      }).catch(() => {});
+
+      // 设置初始等级为30
+      invoke('cheat_set_level', { level: 30 }).then((r) => {
+        console.log('[Pet]: 等级已设为', r.level);
       }).catch(() => {});
 
       // 4.5 自主行走 — 每 120ms tick 一次
@@ -835,9 +920,12 @@ class DesktopPetApp {
       // 4.6 点击穿透轮询 — 每 150ms 检测鼠标是否在宠物精灵上
       this._clickthroughInterval = setInterval(() => this._checkClickthrough(), 150);
 
-      // 4.7 环境互动: 音乐跳舞 + 空闲捣蛋
+      // 4.7 环境互动: 音乐跳舞 + 空闲捣蛋 + 20 秒主动闲聊
       this._musicTimer = setInterval(() => this._musicTick().catch(() => {}), MUSIC_POLL_MS);
       this._scheduleMischief();
+      this._startChatter();
+      // 4.8 如果启动时已是生病状态，立即开启咳嗽调度
+      if (this.mode === 'ill') this._startIllCough();
 
       // 5. 启动渲染循环
       this.lastTime = performance.now();
@@ -855,7 +943,10 @@ class DesktopPetApp {
     ['mousedown', 'mouseup', 'mousemove', 'click', 'contextmenu'].forEach((type) => {
       el.addEventListener(type, (e) => {
         e.stopPropagation();
+        this._clearPressTimer();
         this._pressStartTime = 0;
+        this._pressPart = null;
+        this._raiseHoldActive = false;
         this._dragging = false;
         document.body.classList.remove('dragging');
       });
@@ -864,6 +955,163 @@ class DesktopPetApp {
 
   _isUiPointerTarget(target) {
     return !!(target && target.closest && target.closest('#pet-toolbar, .tb-submenu, .tb-panel, #chat-panel'));
+  }
+
+  _pointerLogicalFromEvent(e) {
+    const rect = this.canvas.getBoundingClientRect();
+    const cx = e.target === this.canvas && e.offsetX !== undefined ? e.offsetX : e.clientX - rect.left;
+    const cy = e.target === this.canvas && e.offsetY !== undefined ? e.offsetY : e.clientY - rect.top;
+    if (cx < 0 || cy < 0 || cx > rect.width || cy > rect.height) return null;
+    return this._canvasToLogical(cx, cy);
+  }
+
+  _clearPressTimer() {
+    if (this._pressTimer) {
+      clearTimeout(this._pressTimer);
+      this._pressTimer = null;
+    }
+  }
+
+  _beginPress(e, logicalPoint = null) {
+    this._clearPressTimer();
+    this._pressStartTime = e.timeStamp || performance.now();
+    this._dragging = false;
+    this._raiseHoldActive = false;
+    this._dragStartX = e.screenX;
+    this._dragStartY = e.screenY;
+    this._dragLastDx = 0;
+
+    const point = logicalPoint || this._pointerLogicalFromEvent(e);
+    this._pressStartLogical = point || { x: 0, y: 0 };
+    this._pressPart = point ? this._hitTestLogical(point.x, point.y) : null;
+    this._hoveredPart = this._pressPart;
+
+    if (this._pressPart) {
+      this._pressTimer = setTimeout(() => this._triggerLongPressHold(), MOUSE_LONG_PRESS_MS);
+    }
+  }
+
+  _updateHoverFromEvent(e) {
+    const point = this._pointerLogicalFromEvent(e);
+    this._hoveredPart = point ? this._hitTestLogical(point.x, point.y) : null;
+  }
+
+  // ── VPet 鼠标挥动检测 ──
+  // 对标 VPet Main.xaml.cs MainGrid_MouseMove 挥手识别逻辑
+  // 逻辑坐标空间 500×500; X<200=左, X>300=右; Y<250=上半身(头), Y>=250=下半身(身体)
+  _tickWaveDetection(e) {
+    const now = performance.now();
+
+    // 超过 2s 无移动则重置所有计数
+    if (now - this._waveLastAt > 2000) {
+      this._waveTimes = 0;
+      this._waveSwitchCount = 0;
+      this._waveLeft = null;
+      this._waveTop  = null;
+    }
+    this._waveLastAt = now;
+
+    // 冷却期内跳过 (触发后 3s 内不重复)
+    if (now < this._waveCooldownUntil) return;
+
+    const point = this._pointerLogicalFromEvent(e);
+    if (!point) return;
+
+    const isLeft = point.x < 200;
+    const isTop  = point.y < 250;
+
+    // 水平方向切换计入 switch 计数和累计次数
+    if (this._waveLeft !== null && this._waveLeft !== isLeft) {
+      this._waveSwitchCount++;
+      this._waveTimes++;
+    }
+    // 垂直方向切换只计入累计次数 (辅助判断活跃度)
+    if (this._waveTop !== null && this._waveTop !== isTop) {
+      this._waveTimes++;
+    }
+    this._waveLeft = isLeft;
+    this._waveTop  = isTop;
+
+    // 触发条件：切换 >= 3 次 && 累计运动 >= 5 次
+    // 且宠物当前处于可互动状态 (对标 VPet: IsIdel || already in Touch anim)
+    if (this._waveSwitchCount < 3 || this._waveTimes < 5) return;
+    const isIdle = !this._dragging && !this._manualSleepMode && !this._manualAnimLock
+      && !this._musicActive && !this._mischiefBusy && !this._chatterBusy;
+    const alreadyInTouch = this.graphType === 'touch_head' || this.graphType === 'touch_body';
+    const isDefaultIdle  = this.graphType === 'default';
+    if (!isIdle || (!alreadyInTouch && !isDefaultIdle && this._waveTimes < 10)) return;
+
+    // 重置计数 + 设置冷却
+    this._waveTimes = 0;
+    this._waveSwitchCount = 0;
+    this._waveLeft = null;
+    this._waveTop  = null;
+    this._waveCooldownUntil = now + 3000;
+
+    // 上半部 → touch_head, 下半部 → touch_body (对标 VPet wavetop 逻辑)
+    const graph = isTop ? 'touch_head' : 'touch_body';
+    this._doWaveTouch(graph);
+  }
+
+  async _doWaveTouch(graph) {
+    if (!this._hasAnimationGraph(graph)) return;
+    // 播放触摸动画
+    this.playAnimation(graph, this.mode || 'normal', () => {
+      this._returnToBaseState(this.mode || 'normal');
+    }, { autoEndLoops: 1 });
+    // 更新属性 (对标 VPet Touch: Strength-2, Feeling+1)
+    const lx = graph === 'touch_head' ? 250 : 250;
+    const ly = graph === 'touch_head' ? 180 : 320;
+    try { await invoke('process_interaction', { lx, ly, pressDurationMs: 50, hasMoved: false }); }
+    catch (_) {}
+    this._recordInteraction('touch', { part: graph === 'touch_head' ? 'head' : 'body', duration: 1600, label: 'wave' });
+    const msgs = graph === 'touch_head'
+      ? ['主人在挥手呢~', '喵？要摸我吗？', '嗯嗯，我在这里！', '好好好，我注意到了！']
+      : ['主人在和我打招呼！', '嗯嗯~！', '挠一挠真舒服！', '主人在逗我！'];
+    this.showBubble(msgs[Math.floor(Math.random() * msgs.length)], 1800);
+  }
+
+  _triggerLongPressHold() {
+    this._pressTimer = null;
+    if (this._dragging || this._raiseHoldActive || !this._pressStartTime || !this._pressPart) return;
+    this._raiseHoldActive = true;
+    if (this._musicActive) this._stopMusicDance({ restore: false });
+    this._walkPauseUntil = performance.now() + 1800;
+    this._manualSleepMode = false;
+    this._manualAnimLock = true;
+    this._animatingLock = false;
+    invoke('process_interaction', {
+      lx: this._pressStartLogical.x,
+      ly: this._pressStartLogical.y,
+      pressDurationMs: MOUSE_LONG_PRESS_MS,
+      hasMoved: false,
+    }).catch(() => {});
+    if (this.graphType !== 'raise') {
+      this.playAnimation('raise', this.mode || 'normal');
+    }
+  }
+
+  _finishClickPress(e, logicalPoint = null) {
+    if (!this._pressStartTime) return false;
+    this._clearPressTimer();
+
+    let pressDurationMs = (e.timeStamp || performance.now()) - this._pressStartTime;
+    if (this._pressStartTime === 0 || pressDurationMs > 5000 || pressDurationMs < 0) {
+      pressDurationMs = 50;
+    }
+
+    if (pressDurationMs >= MOUSE_LONG_PRESS_MS && this._pressPart) {
+      this._triggerLongPressHold();
+      return this._finishDrag(e);
+    }
+
+    this._pressStartTime = 0;
+    const point = logicalPoint || this._pointerLogicalFromEvent(e) || this._pressStartLogical;
+    const part = point ? this._hitTestLogical(point.x, point.y) : null;
+    this._pressPart = null;
+    if (!point || !part) return false;
+    this._onClickPart(point.x, point.y, pressDurationMs);
+    return true;
   }
 
   // ── 互动系统 ──
@@ -1034,6 +1282,96 @@ class DesktopPetApp {
     });
   }
 
+  _startChatter() {
+    if (this._chatterTimer) clearInterval(this._chatterTimer);
+    this._chatterTimer = setInterval(() => {
+      this._tickChatter().catch(() => {});
+    }, CHATTER_AI_INTERVAL_MS);
+    window.addEventListener('beforeunload', () => this._stopChatter(), { once: true });
+  }
+
+  _stopChatter() {
+    if (!this._chatterTimer) return;
+    clearInterval(this._chatterTimer);
+    this._chatterTimer = null;
+  }
+
+  // ── 生病咳嗽调度 ──
+
+  _startIllCough() {
+    this._stopIllCough();
+    const schedule = () => {
+      // 每 25~55 秒触发一次咳嗽
+      const delay = 25000 + Math.random() * 30000;
+      this._illCoughTimer = setTimeout(() => {
+        this._doIllCough();
+        schedule();
+      }, delay);
+    };
+    schedule();
+  }
+
+  _stopIllCough() {
+    if (this._illCoughTimer) { clearTimeout(this._illCoughTimer); this._illCoughTimer = null; }
+  }
+
+  _doIllCough() {
+    if (this.mode !== 'ill') { this._stopIllCough(); return; }
+    if (this._dragging || this._manualSleepMode || this._manualAnimLock) return;
+    if (this.graphType !== 'default') return;
+    // 随机咳嗽台词
+    const coughLines = [
+      '咳咳咳...', '呜...身体好难受...', '咳...*打了个喷嚏*', '咳嗽了一下，主人要关心我喵...',
+    ];
+    const line = coughLines[Math.floor(Math.random() * coughLines.length)];
+    this.playAnimation('cough', 'ill', null, { force: true });
+    this.showBubble(line, 2000);
+    setTimeout(() => {
+      if (!this._dragging && !this._manualAnimLock) {
+        this._returnToIdle(this.mode);
+      }
+    }, 2800);
+  }
+
+  _canChatter() {
+    if (this._dragging || this._manualSleepMode) return false;
+    if (this._auxWindowActive) return false;
+    if (this.chatUI && this.chatUI._isSending && this.chatUI.isVisible) return false;
+    return true;
+  }
+
+  async _tickChatter() {
+    if (this._chatterBusy) return;
+    if (!this._canChatter()) return;
+
+    this._chatterBusy = true;
+    const topic = CHATTER_TOPICS[this._chatterTopicIndex % CHATTER_TOPICS.length];
+    this._chatterTopicIndex = (this._chatterTopicIndex + 1) % CHATTER_TOPICS.length;
+
+    try {
+      const recentChatter = this._chatterHistory.slice(-4);
+      // 复用 _speakProactive 路径：和聊天窗口走同一个 LLM 调用链
+      // force/forceType 跳过全局间隔限制，由 _chatterTimer 自行控制节奏
+      const speech = await this._speakProactive(
+        { type: 'chatter', topic, recentChatter },
+        {
+          fallback: this._fallbackProactiveSpeech({ type: 'chatter', topic }),
+          force: true,
+          forceType: true,
+          allowChatActive: true,
+        }
+      );
+      if (speech) {
+        this._chatterHistory.push(speech);
+        if (this._chatterHistory.length > 12) this._chatterHistory.shift();
+        this._markChatActive(Math.max(4000, speech.length * 70));
+        this._recordInteraction('chat', { label: `chatter:${topic}`, duration: 0, suppressFeedback: true });
+      }
+    } finally {
+      this._chatterBusy = false;
+    }
+  }
+
   _canUseProactiveAi(options = {}) {
     const now = performance.now();
     if (this._proactiveAiBusy) return false;
@@ -1082,6 +1420,11 @@ class DesktopPetApp {
       play: [`开始${label || '玩耍'}，主人也要开心。`, '玩耍时间到啦。'],
       work: [`开始${label || '工作'}啦，我会努力的。`, '认真模式启动。'],
       music: ['这首歌好像很适合跳舞。', '节奏来了，我要动起来。'],
+      chatter: [
+        `忽然想聊聊${context.topic || label || '今天'}，主人也在想事情吗？`,
+        '我刚刚看着桌面，觉得世界小小的也很热闹。',
+        '给主人念一句：风路过窗边，也把温柔带来了。',
+      ],
     };
     const choices = pools[type] || pools.idle;
     return choices[Math.floor(Math.random() * choices.length)];
@@ -1113,6 +1456,13 @@ class DesktopPetApp {
       play: `我准备开始玩耍：${context.label || work.name || '玩耍'}；我该说什么？`,
       work: `我准备开始工作/学习：${context.label || context.workName || work.name || '工作'}；我该说什么？`,
       music: `我听到音乐，准备跳舞；我该说什么？`,
+      chatter: (() => {
+        const recent = context.recentChatter;
+        const recentNote = recent && recent.length
+          ? `\n我最近说过：${recent.map(s => `"${s}"`).join('、')}。请务必说一句完全不同的内容，不要重复类似的措辞或意思。`
+          : '';
+        return `我现在进入话痨模式，每隔一段时间主动和主人说一句话。当前话题：「${context.topic || '生活'}」。${recentNote}\n请发挥创意，说一句独特、自然、贴合话题的话，可以是诗意的描述、有趣的联想、对主人的鼓励或猫猫视角的感悟。`;
+      })(),
     }[context.type || 'idle'] || (context.reason || '我想主动和主人说一句话。');
 
     return [
@@ -1183,19 +1533,35 @@ class DesktopPetApp {
       }).catch(() => '你是一只活泼、亲近主人的桌面宠物。');
       const petName = config.pet_name || '喵喵';
       const prompt = `你的名字叫「${petName}」。\n${basePrompt}\n\n你现在只负责给桌宠生成主动气泡台词。台词要短、自然、可爱，贴合当前事件。`;
+      const isChatterType = (context.type === 'chatter');
       const tunedConfig = {
         ...config,
-        temperature: Math.max(0.6, Math.min(1.0, Number(config.temperature || 0.8))),
-        max_tokens: Math.min(Number(config.max_tokens || 80), 80),
+        temperature: isChatterType
+          ? Math.max(0.85, Math.min(1.2, Number(config.temperature || 0.9)))
+          : Math.max(0.6, Math.min(1.0, Number(config.temperature || 0.8))),
+        max_tokens: isChatterType
+          ? Math.min(Number(config.max_tokens || 120), 120)
+          : Math.min(Number(config.max_tokens || 80), 80),
       };
+      // 话痨模式使用独立历史，避免和其他互动混淆造成重复
+      const history = isChatterType
+        ? this._chatterAiHistory ? this._chatterAiHistory.slice(-4) : []
+        : this._proactiveAiHistory.slice(-6);
       const newHistory = await invoke('chat_stream', {
         message: this._buildProactiveUserPrompt(context, status),
         config: tunedConfig,
         systemPrompt: prompt,
-        history: this._proactiveAiHistory.slice(-6),
+        history,
       });
 
-      if (Array.isArray(newHistory)) this._proactiveAiHistory = newHistory.slice(-8);
+      if (Array.isArray(newHistory)) {
+        if (isChatterType) {
+          if (!this._chatterAiHistory) this._chatterAiHistory = [];
+          this._chatterAiHistory = newHistory.slice(-6);
+        } else {
+          this._proactiveAiHistory = newHistory.slice(-8);
+        }
+      }
       const assistant = Array.isArray(newHistory)
         ? [...newHistory].reverse().find((item) => item && item.role === 'assistant')
         : null;
@@ -1210,11 +1576,16 @@ class DesktopPetApp {
   }
 
   async _speakProactive(context = {}, options = {}) {
+    const isChatter = (context.type === 'chatter');
+    if (isChatter) this._startThinkingDots();
     const speech = await this._resolveProactiveSpeech(context, options);
+    if (isChatter) this._stopThinkingDots(speech);
     if (!speech) return null;
     this._markProactiveAi(context.type || 'idle');
-    const duration = options.duration || Math.max(2800, speech.length * 90);
-    this.showBubble(speech, duration);
+    if (!isChatter) {
+      const duration = options.duration || Math.max(2800, speech.length * 90);
+      this.showBubble(speech, duration);
+    }
     return speech;
   }
 
@@ -1226,6 +1597,18 @@ class DesktopPetApp {
       allowToolbarActive: true,
       ...options,
     });
+  }
+
+  async _ttsSpeak(text) {
+    if (!text || !text.trim()) return;
+    try {
+      const hasTtsKey = await invoke('has_tts_api_key', {});
+      if (!hasTtsKey) return;
+      const base64Wav = await invoke('tts_speak', { text });
+      if (base64Wav) playBase64Wav(base64Wav);
+    } catch (e) {
+      console.warn('TTS 合成失败:', e);
+    }
   }
 
   _markChatActive(duration = 12000) {
@@ -1246,7 +1629,8 @@ class DesktopPetApp {
   }
 
   _hasAnimationGraph(graphType) {
-    return this._manifestAnimations.size === 0 || this._manifestAnimations.has(graphType);
+    if (this._manifestAnimations.size === 0 || this._manifestAnimations.has(graphType)) return true;
+    return graphType.startsWith('move.') && this._manifestAnimations.has('move');
   }
 
   _canAmbientAct(options = {}) {
@@ -1450,40 +1834,78 @@ class DesktopPetApp {
   // ── 气泡提示 ──
 
   showBubble(text, duration = 2500) {
+    this._clearBubble();
     const bubble = document.createElement('div');
     bubble.className = 'pet-bubble';
     bubble.textContent = text;
     Object.assign(bubble.style, {
       position: 'fixed',
-      top: '20px',
-      left: '50%',
-      transform: 'translateX(-50%)',
-      background: 'rgba(0,0,0,0.8)',
+      right: '8px',
+      top: '8px',
+      transform: 'translateY(0)',
+      background: 'rgba(0,0,0,0.78)',
       color: '#fff',
-      padding: '6px 14px',
-      borderRadius: '12px',
-      fontSize: '14px',
+      padding: '6px 10px',
+      borderRadius: '10px',
+      fontSize: '12px',
       fontFamily: 'sans-serif',
-      maxWidth: '260px',
+      maxWidth: '150px',
       whiteSpace: 'pre-wrap',
       wordBreak: 'break-word',
-      lineHeight: '1.5',
-      textAlign: 'center',
+      lineHeight: '1.45',
+      textAlign: 'left',
       zIndex: '150',
       pointerEvents: 'none',
       opacity: '0',
       transition: 'opacity 0.3s, transform 0.3s',
     });
+    this._currentBubble = bubble;
     document.body.appendChild(bubble);
     requestAnimationFrame(() => {
       bubble.style.opacity = '1';
-      bubble.style.transform = 'translateX(-50%) translateY(-4px)';
+      bubble.style.transform = 'translateY(-3px)';
     });
-    setTimeout(() => {
-      bubble.style.opacity = '0';
-      bubble.style.transform = 'translateX(-50%) translateY(-12px)';
-      setTimeout(() => bubble.remove(), 300);
-    }, duration);
+    if (duration > 0) {
+      setTimeout(() => { this._dismissBubble(bubble); }, duration);
+    }
+  }
+
+  _dismissBubble(bubble) {
+    if (!bubble || !bubble.parentNode) return;
+    if (this._currentBubble === bubble) this._currentBubble = null;
+    bubble.style.opacity = '0';
+    bubble.style.transform = 'translateY(-10px)';
+    setTimeout(() => bubble.remove(), 300);
+  }
+
+  _clearBubble() {
+    if (this._currentBubble) {
+      this._dismissBubble(this._currentBubble);
+      this._currentBubble = null;
+    }
+  }
+
+  _startThinkingDots() {
+    this._stopThinkingDots();
+    let dotCount = 1;
+    const show = () => {
+      if (!this._thinkingTimer) return;
+      this.showBubble('.'.repeat(dotCount), 0);
+      dotCount = dotCount < 10 ? dotCount + 1 : 1;
+    };
+    show();
+    this._thinkingTimer = setInterval(show, 700);
+  }
+
+  _stopThinkingDots(finalSpeech = null) {
+    if (this._thinkingTimer) {
+      clearInterval(this._thinkingTimer);
+      this._thinkingTimer = null;
+    }
+    if (finalSpeech) {
+      this.showBubble(finalSpeech, Math.max(2800, finalSpeech.length * 90));
+      this._ttsSpeak(finalSpeech);
+    }
   }
 
   async _loadAnimation(graphType, mode) {
@@ -1526,8 +1948,8 @@ class DesktopPetApp {
       return;
     }
 
-    // 防止并发: 如果正在切换动画则跳过
-    if (this._animatingLock) return;
+    // 防止并发: 如果正在切换动画则跳过 (force 模式跳过此检查)
+    if (this._animatingLock && !options.force) return;
     this._animatingLock = true;
     const isAmbient = !!options.ambient;
 
@@ -1550,21 +1972,28 @@ class DesktopPetApp {
 
     try {
       await this._loadAnimation(graphType, mode);
+      // startPhase: 'b_loop' — 跳过 a_start 直接进入循环阶段 (对标 VPet 拖拽行为)
+      if (options.startPhase === 'b_loop') {
+        this.player.goToLoop();
+      }
     } catch (e) {
       console.warn('加载动画失败:', e);
     }
 
-    // 食物中间层: 加载并设置食物图 (吃饭/喝水时传入), 否则清除
+    // 食物中间层: 吃饭/喝水动画期间保留物品图；普通动画才清除
     if (options.foodImage) {
       try {
         await preloadFrames([options.foodImage]);
         this.player.setFoodImage(frameCache.get(options.foodImage) || null);
+        this._feedingGraph = graphType;
       } catch (e) {
         console.warn('食物图加载失败:', e);
         this.player.setFoodImage(null);
+        this._feedingGraph = null;
       }
-    } else {
+    } else if (!this._feedingGraph || graphType !== this._feedingGraph) {
       this.player.setFoodImage(null);
+      this._feedingGraph = null;
     }
 
     // 自动触发 c_end (用于 pinch 等有结束动画的动作)
@@ -1607,108 +2036,159 @@ class DesktopPetApp {
   _bindEvents() {
     // 全局 window mousedown 兜底 (Tauri 透明窗口可能拦截 canvas mousedown)
     window.addEventListener('mousedown', (e) => {
-      if (e.button === 0 && this._pressStartTime === 0) {
-        if (this._isUiPointerTarget(e.target)) return;
-        this._pressStartTime = e.timeStamp;
-        this._dragging = false;
-        this._dragStartX = e.screenX;
-        this._dragStartY = e.screenY;
-      }
+      if (e.button !== 0 || this._pressStartTime !== 0) return;
+      if (this._isUiPointerTarget(e.target)) return;
+      this._beginPress(e);
     });
 
     // 拖拽窗口：mousedown on canvas
     this.canvas.addEventListener('mousedown', (e) => {
-      if (e.button === 0) {
-        // 左键：检测拖拽意图
-        this._dragging = false;
-        this._dragStartX = e.screenX;
-        this._dragStartY = e.screenY;
-        this._pressStartTime = e.timeStamp;
+      if (e.button !== 0) return;
+      const point = this._pointerLogicalFromEvent(e);
+      this._beginPress(e, point);
+      e.preventDefault();
+    });
 
-        // 命中检测
-        const { x, y } = this._canvasToLogical(e.offsetX, e.offsetY);
-        this._hoveredPart = this._hitTestLogical(x, y);
-
-        // 阻止默认行为防止选中
-        e.preventDefault();
+    // SideHide 悬停 — 鼠标进入时立即弹出，离开时立即缩回
+    this.canvas.addEventListener('mouseenter', () => {
+      if (this.graphType === 'sidehide_left_main') {
+        this.playAnimation('sidehide_left_rise', this.mode, null, { force: true });
+      } else if (this.graphType === 'sidehide_right_main') {
+        this.playAnimation('sidehide_right_rise', this.mode, null, { force: true });
+      }
+    });
+    this.canvas.addEventListener('mouseleave', () => {
+      if (this.graphType === 'sidehide_left_rise') {
+        this.playAnimation('sidehide_left_main', this.mode, null, { force: true });
+      } else if (this.graphType === 'sidehide_right_rise') {
+        this.playAnimation('sidehide_right_main', this.mode, null, { force: true });
       }
     });
 
-    // 全局 mousemove (用于窗口拖拽)
+    // 全局 mousemove (用于窗口拖拽 + VPet 挥手检测)
     window.addEventListener('mousemove', (e) => {
       if (e.buttons !== 1) {
-        // 左键未按下，更新 hover 状态
-        const rect = this.canvas.getBoundingClientRect();
-        const cx = e.clientX - rect.left;
-        const cy = e.clientY - rect.top;
-        if (cx >= 0 && cy >= 0 && cx < rect.width && cy < rect.height) {
-          const { x, y } = this._canvasToLogical(cx, cy);
-          this._hoveredPart = this._hitTestLogical(x, y);
+        this._updateHoverFromEvent(e);
+        if (this._dragging || this._raiseHoldActive) {
+          this._finishDrag(e);
         } else {
-          this._hoveredPart = null;
-        }
-
-        if (this._dragging) {
-          this._dragging = false;
-          document.body.classList.remove('dragging');
+          // 无按键移动时进行挥手检测 (对标 VPet MouseMove wave detection)
+          this._tickWaveDetection(e);
         }
         return;
       }
 
+      if (!this._pressStartTime) return;
+
       if (!this._dragging) {
-        // 判断是否开始拖拽 (移动超过 3px)
         const dx = Math.abs(e.screenX - this._dragStartX);
         const dy = Math.abs(e.screenY - this._dragStartY);
-        if (dx > 3 || dy > 3) {
+        if (dx > MOUSE_DRAG_THRESHOLD_PX || dy > MOUSE_DRAG_THRESHOLD_PX) {
           this._dragging = true;
           document.body.classList.add('dragging');
-          if (this.graphType !== 'raise') {
-            this._manualAnimLock = true;
-            this._animatingLock = false;
-            this.playAnimation('raise', this.mode);
-          }
+          this._beginDragAnimation();
         }
       }
 
       if (this._dragging) {
         const dScreenX = e.screenX - this._dragStartX;
         const dScreenY = e.screenY - this._dragStartY;
+        this._dragLastDx = dScreenX;
         this._dragStartX = e.screenX;
         this._dragStartY = e.screenY;
+        this._walkPauseUntil = performance.now() + 1800;
         invoke('move_window_by', { dx: dScreenX, dy: dScreenY }).catch(() => {});
+      }
+    });
+
+    window.addEventListener('mouseup', (e) => {
+      if (e.button !== 0) return;
+      if (this._dragging || this._raiseHoldActive) {
+        e.preventDefault();
+        this._finishDrag(e);
+        return;
+      }
+      if (e.target !== this.canvas) {
+        this._finishClickPress(e);
       }
     });
 
     // mouseup on canvas
     this.canvas.addEventListener('mouseup', (e) => {
-      if (e.button === 0 && this._dragging) {
-        this._dragging = false;
-        document.body.classList.remove('dragging');
-        this._recordInteraction('drag', { label: 'move', duration: 1200 });
-        this._returnToIdle(this.mode);
-        // 拖拽结束, 通知 Rust
-        invoke('process_interaction', { lx: 0, ly: 0, pressDurationMs: 0, hasMoved: true }).catch(() => {});
-        return;
-      }
-
-      if (e.button === 0) {
-        // 保护: 若 _pressStartTime 为 0 或差值异常 (>5000ms), 视为短按
-        let pressDurationMs = e.timeStamp - this._pressStartTime;
-        if (this._pressStartTime === 0 || pressDurationMs > 5000 || pressDurationMs < 0) {
-          pressDurationMs = 50; // 模拟短按
-        }
-        this._pressStartTime = 0;
-        const { x, y } = this._canvasToLogical(e.offsetX, e.offsetY);
-        this._onClickPart(x, y, pressDurationMs);
-      }
+      if (e.button !== 0) return;
+      if (this._finishDrag(e)) return;
+      const point = this._pointerLogicalFromEvent(e);
+      this._finishClickPress(e, point);
     });
 
-    // 右键菜单 — 停止闲逛并切换底部工具栏
+    // 右键菜单 — 只暂停闲逛并切换底部工具栏，不重启当前工作/玩耍动画
     this.canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      this._stopRoamingAndReturnToIdle();
+      this._clearPressTimer();
+      this._pauseRoamingForMenu();
       this._toolbar.toggle();
     });
+  }
+
+  _beginDragAnimation() {
+    if (this._dragReleaseTimer) { clearTimeout(this._dragReleaseTimer); this._dragReleaseTimer = null; }
+    if (this._manualAnimTimer) { clearTimeout(this._manualAnimTimer); this._manualAnimTimer = null; }
+    if (this._musicActive) this._stopMusicDance({ restore: false });
+    this._walkPauseUntil = performance.now() + 1800;
+    this._manualSleepMode = false;
+    this._manualAnimLock = true;
+    if (this.graphType !== 'raise') {
+      // a_start = 被抓起动画, b_loop = 悬空循环, c_end = 落地动画 (对标 VPet Raised_Static 三段)
+      this.playAnimation('raise', this.mode || 'normal', null, { force: true });
+    }
+  }
+
+  _finishDrag(e) {
+    const wasDragging = this._dragging;
+    const wasHolding = this._raiseHoldActive;
+    if (!wasDragging && !wasHolding) return false;
+
+    this._clearPressTimer();
+    this._dragging = false;
+    this._raiseHoldActive = false;
+    this._pressStartTime = 0;
+    this._pressPart = null;
+    document.body.classList.remove('dragging');
+    this._recordInteraction('drag', { label: wasDragging ? 'move' : 'hold', duration: 1200 });
+    invoke('process_interaction', { lx: this._pressStartLogical.x, ly: this._pressStartLogical.y, pressDurationMs: 0, hasMoved: true }).catch(() => {});
+
+    if (this._manualAnimTimer) { clearTimeout(this._manualAnimTimer); this._manualAnimTimer = null; }
+    if (this._dragReleaseTimer) { clearTimeout(this._dragReleaseTimer); this._dragReleaseTimer = null; }
+
+    const mood = this.mode || 'normal';
+
+    // VPet 落地逻辑: 根据拖拽速度计算摔跤概率
+    const speed = Math.abs(this._dragLastDx || 0);
+    const moodPenalty = mood === 'ill' ? 0.25 : mood === 'poorCondition' ? 0.16 : 0;
+    const motionPenalty = Math.min(0.35, speed / 90);
+    const fallChance = Math.min(0.72, Math.max(0.08, 0.12 + moodPenalty + motionPenalty));
+    const isFall = Math.random() < fallChance;
+
+    const msgs = isFall
+      ? ['哎呀，摔了一下喵...', '落地失败喵...', '主人要轻一点喵~']
+      : ['安全落地喵~', '站稳啦！', '轻轻落地喵~'];
+    const releaseMsg = msgs[Math.floor(Math.random() * msgs.length)];
+
+    this._manualAnimLock = true;
+    this._walkPauseUntil = performance.now() + 3500;
+    this.showBubble(releaseMsg, 2200);
+    this._dragReleaseTimer = null;
+
+    // 对标 VPet: 播放 raise c_end (落地收尾动画), 结束后回到 idle
+    // raise 已拆分为 a_start/b_loop/c_end 三段, triggerEnd 触发 c_end 落地帧
+    this.player.triggerEnd(() => {
+      this._manualAnimLock = false;
+      if (this._manualAnimTimer) { clearTimeout(this._manualAnimTimer); this._manualAnimTimer = null; }
+      if (!this._wasWorking || !this._currentWorkContext?.graph) this._returnToIdle(mood);
+      else this._scheduleWorkResumeAfterInterrupt(mood);
+    });
+    if (e) e.preventDefault();
+    return true;
   }
 
   // Canvas 像素 → 逻辑坐标 (500x500 空间)
@@ -1737,26 +2217,105 @@ class DesktopPetApp {
     return dx * dx + dy * dy <= 1;
   }
 
-  _returnToIdle(mood = this.mode) {
-    this._wasWorking = false;
-    this._manualSleepMode = false;
+  _workCategoryFrom(graph = '', type = '') {
+    const value = String(graph || '').toLowerCase();
+    const kind = String(type || '').toLowerCase();
+    if (kind === 'play' || ['playone', 'removeobject', 'ropeskipping'].includes(value)) return 'play';
+    if (kind === 'study' || ['study', 'studytwo', 'calligraphy', 'studypaint'].includes(value)) return 'study';
+    return 'work';
+  }
+
+  _rememberWorkContext(result = {}) {
+    const work = result.work || {};
+    const graph = result.graphType || result.graph || work.graph || this._currentWorkContext?.graph;
+    if (!graph || graph === 'default') return null;
+    const type = result.workType || result.type || work.type || this._currentWorkContext?.type || '';
+    const category = this._workCategoryFrom(graph, type);
+    const labels = { work: '工作', study: '学习', play: '玩耍' };
+    const context = {
+      graph,
+      type,
+      category,
+      categoryLabel: labels[category] || '任务',
+      speechType: category === 'play' ? 'play' : 'work',
+      name: result.workName || result.name || work.name || this._currentWorkContext?.name || labels[category] || '任务',
+      mood: result.mood || this.mode || 'normal',
+    };
+    this._currentWorkContext = context;
+    this._wasWorking = true;
+    return context;
+  }
+
+  _clearManualAnimationLock() {
     this._manualAnimLock = false;
+    if (this._manualAnimTimer) {
+      clearTimeout(this._manualAnimTimer);
+      this._manualAnimTimer = null;
+    }
+  }
+
+  _returnToIdle(mood = this.mode, options = {}) {
+    this._wasWorking = false;
+    this._currentWorkContext = null;
+    this._manualSleepMode = false;
+    this._clearManualAnimationLock();
     this._walkGraphType = 'default';
     this._walkPauseUntil = performance.now() + 1200;
-    if (this._manualAnimTimer) { clearTimeout(this._manualAnimTimer); this._manualAnimTimer = null; }
     this._animatingLock = false;
-    this.playAnimation('default', mood || 'normal');
+    this.playAnimation('default', mood || 'normal', null, { ambient: !!options.ambient });
+  }
+
+  _returnToBaseState(mood = this.mode, options = {}) {
+    this._manualSleepMode = false;
+    this._clearManualAnimationLock();
+    this._animatingLock = false;
+    this._walkPauseUntil = performance.now() + 1200;
+
+    const context = this._wasWorking ? this._currentWorkContext : null;
+    if (context?.graph) {
+      this._walkGraphType = context.graph;
+      this.playAnimation(context.graph, mood || context.mood || 'normal', null, { ambient: !!options.ambient });
+      return;
+    }
+
+    this._returnToIdle(mood, options);
+  }
+
+  _scheduleWorkResumeAfterInterrupt(mood = this.mode) {
+    const context = this._currentWorkContext;
+    if (!this._wasWorking || !context?.graph) {
+      this._returnToIdle(mood);
+      return;
+    }
+    if (this._resumeWorkTimer) {
+      clearTimeout(this._resumeWorkTimer);
+      this._resumeWorkTimer = null;
+    }
+    this._resumeWorkTimer = setTimeout(() => {
+      this._resumeWorkTimer = null;
+      if (!this._wasWorking || !this._currentWorkContext?.graph) return;
+      this.showBubble(`我要继续${this._currentWorkContext.categoryLabel}了`, 1800);
+      this._returnToBaseState(mood, { ambient: true });
+    }, 900);
+  }
+
+  _pauseRoamingForMenu() {
+    this._walkPauseUntil = performance.now() + 2500;
+    this._manualSleepMode = false;
+    this._animatingLock = false;
+    if (this._wasWorking && this._currentWorkContext?.graph) {
+      this._clearManualAnimationLock();
+      return;
+    }
+    if (['eat', 'drink', 'raise', 'sleep'].includes(this.graphType)) return;
+    this._walkGraphType = 'default';
+    this._clearManualAnimationLock();
+    invoke('reset_walk_state', {}).catch(() => {});
+    this.playAnimation('default', this.mode || 'normal', null, { ambient: true });
   }
 
   _stopRoamingAndReturnToIdle() {
-    this._walkPauseUntil = performance.now() + 2500;
-    this._walkGraphType = 'default';
-    this._manualSleepMode = false;
-    this._manualAnimLock = false;
-    this._animatingLock = false;
-    if (this._manualAnimTimer) { clearTimeout(this._manualAnimTimer); this._manualAnimTimer = null; }
-    invoke('reset_walk_state', {}).catch(() => {});
-    this.playAnimation('default', this.mode || 'normal', null, { ambient: true });
+    this._pauseRoamingForMenu();
   }
 
   _wakeFromManualSleep() {
@@ -1775,10 +2334,6 @@ class DesktopPetApp {
       this._wakeFromManualSleep();
       return;
     }
-    if (part === 'head' && pressDurationMs < 800) {
-      this._handlePinch();
-      return;
-    }
 
     // 防抖: 300ms 内不允许重复点击 (防止多次点击导致 Rust 锁竞争)
     if (this._lastClickTime && performance.now() - this._lastClickTime < 300) return;
@@ -1789,91 +2344,83 @@ class DesktopPetApp {
       const result = await invoke('process_interaction', {
         lx, ly, pressDurationMs, hasMoved: false,
       });
-      this._applyInteractionResult(result, interaction.mood || 'normal');
+      const touchGraph = part === 'head' ? 'touch_head' : 'touch_body';
+      if (this._hasAnimationGraph(touchGraph)) {
+        this.playAnimation(touchGraph, result?.mood || interaction.mood || 'normal', () => {
+          this._returnToBaseState(result?.mood || interaction.mood || 'normal');
+        }, { autoEndLoops: 1 });
+      } else {
+        this._applyInteractionResult(result, interaction.mood || 'normal');
+      }
     } catch (e) {
       console.warn('交互处理失败:', e);
-      // 降级: 本地命中检测
-      if (part === 'head') this.playAnimation('default', 'happy');
-      else if (part === 'body') this.playAnimation('default', 'normal');
+      const fallbackGraph = part === 'head' ? 'touch_head' : 'touch_body';
+      if (this._hasAnimationGraph(fallbackGraph)) this.playAnimation(fallbackGraph, this.mode || 'normal');
+      else this._returnToBaseState(this.mode || 'normal');
     }
   }
 
   async _handleFeed() {
-    this._recordInteraction('feed', { label: 'random-food', duration: 1600, suppressFeedback: true });
-    try {
-      const result = await invoke('pet_action_feed', {});
-      const label = result.foodName || '随机食物';
-      this._speakSceneProactive({ type: 'feed', label, foodName: label }).catch(() => {});
-      // 强制清除并发锁，确保吃饭动画不被行走tick阻断
-      this._animatingLock = false;
-      await this.playAnimation(result.graphType || 'eat', result.mood || 'normal', null, { foodImage: result.foodImage });
-      // 吃完后4秒自动回到默认动画
-      setTimeout(() => {
-        if (this.graphType === 'eat') {
-          this._returnToIdle(result.mood || this.mode);
-        }
-      }, 4000);
-      if (result.message) console.log('[Pet]:', result.message);
-    } catch(e) { this.showBubble('吃不了...', 2000); }
+    try { await invoke('open_food_panel', { filter: 'food' }); } catch (_) { this.showBubble('菜单打不开...', 2000); }
   }
 
   async _handleDrink() {
-    this._recordInteraction('drink', { label: 'random-drink', duration: 1600, suppressFeedback: true });
-    try {
-      const result = await invoke('pet_action_drink', {});
-      const label = result.foodName || '随机饮品';
-      this._speakSceneProactive({ type: 'drink', label, foodName: label }).catch(() => {});
-      // 强制清除并发锁
-      this._animatingLock = false;
-      await this.playAnimation(result.graphType || 'drink', result.mood || 'normal', null, { foodImage: result.foodImage });
-      // 喝完后4秒自动回到默认动画
-      setTimeout(() => {
-        if (this.graphType === 'drink') {
-          this._returnToIdle(result.mood || this.mode);
-        }
-      }, 4000);
-      if (result.message) console.log('[Pet]:', result.message);
-    } catch(e) { this.showBubble('喝不了...', 2000); }
+    try { await invoke('open_food_panel', { filter: 'drink' }); } catch (_) { this.showBubble('菜单打不开...', 2000); }
   }
 
   // 从食物菜单选定具体食物 — 调后端 pet_action_eat, 播放对应三层动画
-  async _handleEatFood(name) {
+  async _handleEatFood(name, graphHint = '') {
     const normalizedName = String(name || '食物');
-    const lower = normalizedName.toLowerCase();
-    const type = lower.includes('水') || lower.includes('茶') || lower.includes('奶') || lower.includes('drink') ? 'drink' : 'feed';
+    const type = graphHint === 'drink' ? 'drink' : 'feed';
     this._recordInteraction(type, { label: normalizedName, duration: 1600, suppressFeedback: true });
     try {
       const result = await invoke('pet_action_eat', { foodName: name });
+      // 金币不足时给出提示并中止
+      if (result.canAfford === false) {
+        this.showBubble(result.message || '金币不足！先去工作赚钱吧~', 2800);
+        return;
+      }
+      this._wasWorking = false;
+      this._manualSleepMode = false;
+      const graph = result.graphType || graphHint || 'eat';
+      const speechType = graph === 'drink' ? 'drink' : 'feed';
       const label = result.foodName || normalizedName;
-      this._speakSceneProactive({ type, label, foodName: label }).catch(() => {});
+      this._speakSceneProactive({ type: speechType, label, foodName: label }).catch(() => {});
       // 强制清除并发锁, 确保动画不被行走tick阻断
       this._animatingLock = false;
-      const graph = result.graphType || 'eat';
       await this.playAnimation(graph, result.mood || 'normal', null, { foodImage: result.foodImage });
-      // 吃/喝完4秒后自动回到默认动画
+      // 吃/喝完后先播一次开心表情，再回待机
       setTimeout(() => {
-        if (this.graphType === graph) {
+        if (this.graphType !== graph) return;
+        const happyGraph = this._pickAmbientGraph(['touch_head', 'switch', 'think']);
+        this._animatingLock = false;
+        if (happyGraph && this._hasAnimationGraph(happyGraph)) {
+          this.playAnimation(happyGraph, 'happy', () => {
+            this._returnToIdle(result.mood || this.mode);
+          }, { autoEndLoops: 1 });
+        } else {
           this._returnToIdle(result.mood || this.mode);
         }
-      }, 4000);
+      }, 3800);
       if (result.message) console.log('[Pet]:', result.message);
-    } catch(e) { this.showBubble('吃不了...', 2000); }
+    } catch(e) { this.showBubble(type === 'drink' ? '喝不了...' : '吃不了...', 2000); }
   }
 
-  async _handlePlay() {
-    this._recordInteraction('play', { label: 'menu-play', duration: 1600, suppressFeedback: true });
+  async _handlePlay(playType = null) {
+    this._recordInteraction('play', { label: playType || 'menu-play', duration: 1600, suppressFeedback: true });
     try {
-      const result = await invoke('pet_action_play', {});
-      if (result.graphType) this.playAnimation(result.graphType, result.mood || 'normal');
+      const result = await invoke('pet_action_play', { playType });
       if (result.workStarted) {
-        this._wasWorking = true;
-        const name = result.workName ? result.workName : '玩耍';
+        const context = this._rememberWorkContext(result);
+        const name = result.workName || context?.name || '玩耍';
         this._speakSceneProactive({ type: 'play', label: name, workName: name }, {
           minIntervalMs: PROACTIVE_SCENE_AI_MIN_MS,
           typeMinIntervalMs: PROACTIVE_SCENE_CONTEXT_MIN_MS,
         }).catch(() => {});
-      } else if (result.message) {
-        this.showBubble(result.message, 2500);
+        if (result.graphType) this.playAnimation(result.graphType, result.mood || 'normal');
+      } else {
+        if (result.graphType) this.playAnimation(result.graphType, result.mood || 'normal');
+        if (result.message) this.showBubble(result.message, 2500);
       }
     } catch(e) { this.playAnimation('default', 'happy'); }
   }
@@ -1897,10 +2444,10 @@ class DesktopPetApp {
     try {
       const result = await invoke('pet_action_work', { workType: type });
       if (result.workStarted) {
-        this._wasWorking = true;
-        const name = result.workName ? result.workName : '工作';
-        this._speakSceneProactive({ type: 'work', label: name, workName: name }).catch(() => {});
-        if (result.graphType) this.playAnimation(result.graphType, 'normal');
+        const context = this._rememberWorkContext(result);
+        const name = result.workName || context?.name || '工作';
+        this._speakSceneProactive({ type: context?.speechType || 'work', label: name, workName: name }).catch(() => {});
+        if (result.graphType) this.playAnimation(result.graphType, result.mood || 'normal');
       } else if (result.message) {
         this.showBubble(result.message, 2500);
       }
@@ -1998,18 +2545,6 @@ class DesktopPetApp {
       ctx.drawImage(frontImg, fdx, fdy, fdw, fdh);
     }
 
-    // 开发模式：绘制命中区域辅助线
-    if (this._hoveredPart) {
-      ctx.save();
-      ctx.strokeStyle = 'rgba(0,255,100,0.5)';
-      ctx.lineWidth = 2;
-      if (this._hoveredPart === 'head') {
-        this._drawEllipse(ctx, 250, 180, 100, 90, dx, dy, scale);
-      } else if (this._hoveredPart === 'body') {
-        this._drawEllipse(ctx, 250, 320, 85, 110, dx, dy, scale);
-      }
-      ctx.restore();
-    }
   }
 
   _drawEllipse(ctx, lx, ly, lrx, lry, dx, dy, scale) {
@@ -2063,10 +2598,15 @@ class DesktopPetApp {
       this.canvas.style.transform = '';
 
       // 自主巡游/闲置切换属于环境动作，不占用手动动画锁
+      // 走路动画只在实际移动时触发，避免 Idle→Walking 切换首帧出现"有动画无移动"的问题
       if (nextGraphType && nextGraphType !== this._walkGraphType) {
-        this._walkGraphType = nextGraphType;
-        if (!this._manualAnimLock) {
-          this.playAnimation(nextGraphType, this.mode, null, { ambient: true });
+        const isWalkAnim = nextGraphType.startsWith('move.walk.');
+        const hasMoved = result.dx !== 0 || result.dy !== 0;
+        if (!isWalkAnim || hasMoved) {
+          this._walkGraphType = nextGraphType;
+          if (!this._manualAnimLock) {
+            this.playAnimation(nextGraphType, this.mode, null, { ambient: true });
+          }
         }
       }
     } catch (e) { /* 静默 */ }
@@ -2321,11 +2861,13 @@ class ChatUI {
 
     this._addBubble('user', msg);
     const bubble = this._addBubble('assistant', '...');
+    // 宠物气泡显示等待
+    this.app.showBubble('让我想想该说什么呢...', 0);
 
     try {
       const config = await invoke('load_llm_config', {});
       const hasApiKey = await invoke('has_llm_api_key', {});
-      if (!hasApiKey) { bubble.el.textContent = '请先在设置中配置 API Key'; this._isSending = false; return; }
+      if (!hasApiKey) { bubble.el.textContent = '请先在设置中配置 API Key'; this.app._clearBubble(); this._isSending = false; return; }
 
       const status = await invoke('get_pet_status', {});
       const prompt = await invoke('build_persona_prompt', {
@@ -2335,7 +2877,6 @@ class ChatUI {
       });
 
       let fullText = '';
-      // 必须先 await 注册监听器, 否则流式事件会早于监听器注册而丢失
       const unlistenChunk = await window.PetRuntime.listen('llm-stream-chunk', (event) => {
         fullText += event.payload;
         bubble.el.textContent = fullText;
@@ -2345,11 +2886,12 @@ class ChatUI {
         const final = event.payload || fullText;
         bubble.el.textContent = final;
         this._isSending = false;
-        // AI回复同步显示在宠物气泡上
+        this.app._clearBubble();
         if (final) {
           this.app._markChatActive(Math.max(12000, final.length * 80));
           this.app._recordInteraction('chat', { label: 'reply', duration: 1200 });
           this.app.showBubble(final, Math.max(3000, final.length * 80));
+          this.app._ttsSpeak(final);
         }
       });
 
@@ -2358,12 +2900,11 @@ class ChatUI {
       });
       this.history = newHistory;
 
-      setTimeout(() => {
-        unlistenChunk(); unlistenDone();
-      }, 500);
+      setTimeout(() => { unlistenChunk(); unlistenDone(); }, 500);
     } catch (e) {
       const errMsg = typeof e === 'string' ? e : (e?.message || e?.toString() || JSON.stringify(e) || '未知错误');
       bubble.el.textContent = `请求失败: ${errMsg}`;
+      this.app._clearBubble();
       console.error('Chat error:', e);
       this._isSending = false;
     }

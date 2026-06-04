@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for Desktop Pet",
-  "windows": ["pet", "chat", "settings"],
+  "windows": ["pet", "chat", "settings", "food-panel", "work-panel", "status-panel"],
   "permissions": [
     "core:default",
     "core:window:allow-set-position",

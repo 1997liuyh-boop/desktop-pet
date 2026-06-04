@@ -67,6 +67,13 @@ pub fn all_foods() -> Vec<Food> {
         Food { name: "茶".into(), food_type: FoodType::Drink, exp: 10.0, strength: 10.0, strength_drink: 100.0, strength_food: -1.0, health: 5.0, feeling: 25.0, price: 19.5, graph: "drink".into() },
         Food { name: "纯牛奶".into(), food_type: FoodType::Drink, exp: 10.0, strength: 20.0, strength_drink: 70.0, strength_food: 20.0, health: 2.0, feeling: 30.0, price: 17.5, graph: "drink".into() },
         Food { name: "奶茶".into(), food_type: FoodType::Drink, exp: 40.0, strength: 70.0, strength_drink: 65.0, strength_food: 20.0, health: -1.0, feeling: 25.0, price: 22.0, graph: "drink".into() },
+        // ===== 药品 (graph#medicine) — 1:1 复刻 VPet drug.lps =====
+        Food { name: "维生素C含片".into(), food_type: FoodType::Food, exp: 2.0, strength: 0.0, strength_drink: 0.0, strength_food: 0.0, health: 10.0, feeling: 2.0, price: 16.5, graph: "medicine".into() },
+        Food { name: "钙片".into(),       food_type: FoodType::Food, exp: 2.0, strength: 0.0, strength_drink: 0.0, strength_food: 0.0, health: 10.0, feeling: 0.0, price: 24.5, graph: "medicine".into() },
+        Food { name: "感冒灵颗粒".into(), food_type: FoodType::Food, exp: 4.0, strength: 0.0, strength_drink: 5.0, strength_food: 0.0, health: 20.0, feeling: 3.0, price: 46.5, graph: "medicine".into() },
+        Food { name: "布洛芬".into(),     food_type: FoodType::Food, exp: 8.0, strength: 5.0, strength_drink: 0.0, strength_food: 0.0, health: 35.0, feeling: 5.0, price: 116.0, graph: "medicine".into() },
+        Food { name: "阿司匹林".into(),   food_type: FoodType::Food, exp: 12.0, strength: 5.0, strength_drink: 0.0, strength_food: 0.0, health: 65.0, feeling: 8.0, price: 131.5, graph: "medicine".into() },
+        Food { name: "速效救心丸".into(), food_type: FoodType::Food, exp: 20.0, strength: 10.0, strength_drink: 0.0, strength_food: 0.0, health: 75.0, feeling: 10.0, price: 181.5, graph: "medicine".into() },
     ]
 }
 

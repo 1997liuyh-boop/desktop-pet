@@ -74,7 +74,12 @@ impl MainLogic {
         };
 
         if has_moved {
-            return result; // 拖拽中，不触发点击
+            return InteractResult {
+                event: TouchEventType::DragEnd,
+                graph_type_change: Some("default".into()),
+                message: None,
+                ..result
+            };
         }
 
         if dt >= self.press_threshold {

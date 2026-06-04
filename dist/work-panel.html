@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>工作面板</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a1a;
+      color: #e0e0e0;
+      font-family: "Microsoft YaHei", -apple-system, sans-serif;
+      font-size: 13px;
+      padding: 16px;
+      overflow-y: auto;
+      height: 100vh;
+    }
+    h2 { font-size: 15px; color: #fff; margin-bottom: 12px; }
+    .group-title { font-size: 12px; color: #ffcf8a; margin: 10px 0 6px; font-weight: bold; }
+    .item-btn {
+      width: 100%; display: flex; flex-direction: column; align-items: stretch;
+      padding: 8px; margin: 3px 0; border-radius: 6px; cursor: pointer;
+      border: 0; background: rgba(255,255,255,0.055); color: #e8e8e8;
+      text-align: left; font-family: inherit; font-size: 12px;
+      transition: background 0.15s;
+    }
+    .item-btn:hover { background: rgba(255,255,255,0.13); }
+    .item-btn.locked { background: rgba(255,255,255,0.035); color: #888; opacity: 0.72; cursor: default; }
+    .item-btn.locked:hover { background: rgba(255,255,255,0.035); }
+    .item-name { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+    .item-name .name { font-weight: bold; }
+    .item-name .info { color: #8be9fd; }
+    .item-name .info.locked { color: #ff9d9d; }
+    .item-meta { font-size: 10px; color: #a9adb5; margin-top: 4px; line-height: 1.35; }
+    .stop-btn {
+      width: 100%; padding: 8px; margin-bottom: 10px; border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.18); background: rgba(255,255,255,0.08);
+      color: #f1f1f1; cursor: pointer; font-family: inherit; font-size: 12px;
+    }
+    .stop-btn:hover { background: rgba(255,255,255,0.15); }
+    .empty { color: #aaa; font-size: 12px; padding: 20px 0; text-align: center; }
+  </style>
+</head>
+<body>
+  <h2 id="panel-title">工作面板</h2>
+  <div id="work-list"></div>
+  <div class="empty" id="empty-msg" style="display:none">没有可用项目</div>
+
+  <script src="scripts/runtime.js"></script>
+  <script>
+    const { invoke } = window.PetRuntime;
+    const listEl = document.getElementById('work-list');
+    const titleEl = document.getElementById('panel-title');
+
+    async function init() {
+      try {
+        const kind = window.__workKind || 'work';
+        const isPlay = kind === 'play';
+        const typeLabels = { Work: '工作', Study: '学习', Play: '玩耍' };
+        titleEl.textContent = isPlay ? '玩耍面板' : '工作面板';
+        listEl.innerHTML = '';
+        var emptyMsgEl = document.getElementById('empty-msg');
+        if (emptyMsgEl) emptyMsgEl.style.display = 'none';
+        const [works, status] = await Promise.all([
+          invoke('get_work_types', {}),
+          invoke('get_pet_status', {}).catch(() => ({})),
+        ]);
+        const items = Array.isArray(works) ? works : [];
+        const level = Number(status?.stats?.level || 0);
+        const currentWork = status?.work || null;
+        const isWorking = !!currentWork?.isActive;
+
+        // 停止按钮
+        if (isWorking) {
+          const stopBtn = document.createElement('button');
+          stopBtn.className = 'stop-btn';
+          const progress = Math.max(0, Math.min(100, Math.round(Number(currentWork?.progress || 0) * 100)));
+          stopBtn.textContent = currentWork?.name ? `停止 ${currentWork.name} · ${progress}%` : '停止当前任务';
+          stopBtn.addEventListener('click', async () => {
+            await window.PetRuntime.emit('work-selected', { action: 'stop' });
+            setTimeout(() => window.PetRuntime.currentWindow().close(), 100);
+          });
+          listEl.appendChild(stopBtn);
+        }
+
+        const allowedTypes = isPlay ? ['Play'] : ['Work', 'Study'];
+        let rendered = 0;
+
+        allowedTypes.forEach(type => {
+          const list = items.filter(it => it.type === type);
+          if (!list.length) return;
+
+          const gt = document.createElement('div');
+          gt.className = 'group-title';
+          gt.textContent = typeLabels[type] || type;
+          listEl.appendChild(gt);
+
+          list.forEach(it => {
+            rendered++;
+            const locked = level < Number(it.levelLimit || 0);
+            const btn = document.createElement('button');
+            btn.className = 'item-btn';
+            if (locked) btn.classList.add('locked');
+
+            const nameLine = document.createElement('div');
+            nameLine.className = 'item-name';
+            const nm = document.createElement('span');
+            nm.className = 'name'; nm.textContent = it.name;
+            const info = document.createElement('span');
+            info.className = 'info';
+            if (locked) { info.classList.add('locked'); info.textContent = `Lv.${it.levelLimit}`; }
+            else info.textContent = `${it.timeMinutes}分`;
+            nameLine.appendChild(nm);
+            nameLine.appendChild(info);
+
+            const meta = document.createElement('div');
+            meta.className = 'item-meta';
+            if (locked) meta.textContent = `需要等级 ${it.levelLimit}`;
+            else {
+              const gain = it.type === 'Work' ? `金币倍率 ${it.moneyBase}` : `经验倍率 ${it.moneyBase}`;
+              meta.textContent = `${gain}  完成奖励 ${it.finishBonus}`;
+            }
+
+            btn.appendChild(nameLine);
+            btn.appendChild(meta);
+
+            btn.addEventListener('click', async () => {
+              if (locked) { alert(`需要 Lv.${it.levelLimit}`); return; }
+              await window.PetRuntime.emit('work-selected', { action: 'start', type: it.type, graph: it.graph, name: it.name });
+              setTimeout(() => window.PetRuntime.currentWindow().close(), 100);
+            });
+
+            listEl.appendChild(btn);
+          });
+        });
+
+        if (!rendered && !isWorking) {
+          document.getElementById('empty-msg').style.display = 'block';
+        }
+      } catch (e) { document.getElementById('empty-msg').textContent = '加载失败'; document.getElementById('empty-msg').style.display = 'block'; }
+    }
+
+    init();
+  </script>
+</body>
+</html>

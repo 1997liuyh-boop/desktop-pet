@@ -58,7 +58,7 @@ impl Default for StatsData {
     fn default() -> Self {
         let mut d = Self {
             name: "小橘".into(),
-            money: 100.0,
+            money: 300.0,
             exp: 0.0,
             strength: 100.0,
             store_strength: 0.0,

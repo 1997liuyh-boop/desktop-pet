@@ -1,5 +1,5 @@
 {
-  "productName": "Desktop Pet",
+  "productName": "虚拟桌宠模拟器",
   "version": "0.1.0",
   "identifier": "com.desktop-pet.app",
   "build": {
@@ -10,9 +10,9 @@
     "windows": [
       {
         "label": "pet",
-        "title": "Desktop Pet",
-        "width": 500,
-        "height": 500,
+        "title": "虚拟桌宠模拟器",
+        "width": 250,
+        "height": 250,
         "transparent": true,
         "decorations": false,
         "shadow": false,
@@ -24,9 +24,9 @@
       },
       {
         "label": "settings",
-        "title": "设置 - Desktop Pet",
+        "title": "设置 - 虚拟桌宠模拟器",
         "width": 420,
-        "height": 520,
+        "height": 720,
         "url": "settings.html",
         "transparent": false,
         "decorations": true,
@@ -47,6 +47,48 @@
         "alwaysOnTop": false,
         "skipTaskbar": false,
         "resizable": true,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "food-panel",
+        "title": "投喂",
+        "width": 280,
+        "height": 440,
+        "url": "food-panel.html",
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "resizable": false,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "work-panel",
+        "title": "工作面板",
+        "width": 280,
+        "height": 460,
+        "url": "work-panel.html",
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "resizable": false,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "status-panel",
+        "title": "宠物状态",
+        "width": 280,
+        "height": 420,
+        "url": "status-panel.html",
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "resizable": false,
         "visible": false,
         "center": true
       }

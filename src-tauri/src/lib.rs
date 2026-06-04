@@ -60,8 +60,18 @@ pub fn run() {
             commands::sidehide_check,
             commands::open_settings_window,
             commands::open_chat_window,
+            commands::open_food_panel,
+            commands::open_work_panel,
+            commands::open_status_panel,
+            commands::cheat_set_level,
+            commands::cheat_set_stat,
             commands::set_clickthrough,
             commands::aux_window_visible,
+            commands::tts_speak,
+            commands::save_tts_api_key,
+            commands::has_tts_api_key,
+            commands::save_tts_config,
+            commands::load_tts_config,
         ])
         .setup(|app| {
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -89,8 +99,8 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // 设置/聊天窗口: 拦截关闭按钮, 改为隐藏而非销毁, 以便可再次打开
-            for label in ["settings", "chat"] {
+            // 设置/聊天/面板窗口: 拦截关闭按钮, 改为隐藏而非销毁, 以便可再次打开
+            for label in ["settings", "chat", "food-panel", "work-panel"] {
                 if let Some(win) = app.get_webview_window(label) {
                     let win_clone = win.clone();
                     win.on_window_event(move |event| {
@@ -102,14 +112,14 @@ pub fn run() {
                 }
             }
 
-            // 窗口初始位置 — 放在屏幕右下角且完整可见 (窗口 500x500 逻辑像素)
+            // 窗口初始位置 — 放在屏幕右下角且完整可见 (窗口 250x250 逻辑像素)
             if let Some(window) = app.get_webview_window("pet") {
                 let _ = window.set_always_on_top(true);
                 if let Ok(Some(m)) = window.primary_monitor() {
                     let size = m.size();          // 物理像素
                     let scale = m.scale_factor();
-                    // 窗口物理尺寸 = 500 逻辑 * 缩放; 留出右侧与底部任务栏边距
-                    let win_phys = (500.0 * scale) as i32;
+                    // 窗口物理尺寸 = 250 逻辑 * 缩放; 留出右侧与底部任务栏边距
+                    let win_phys = (250.0 * scale) as i32;
                     let margin_right = (20.0 * scale) as i32;
                     let margin_bottom = (60.0 * scale) as i32;
                     let x = (size.width as i32 - win_phys - margin_right).max(0);
