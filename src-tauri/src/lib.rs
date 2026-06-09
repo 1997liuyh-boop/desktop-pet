@@ -26,6 +26,7 @@ pub fn run() {
             commands::move_window_by,
             commands::set_window_position,
             commands::get_window_position,
+            commands::get_cursor_position,
             commands::get_system_audio_level,
             commands::quit_app,
             commands::save_stats,
@@ -100,7 +101,7 @@ pub fn run() {
                 .build(app)?;
 
             // 设置/聊天/面板窗口: 拦截关闭按钮, 改为隐藏而非销毁, 以便可再次打开
-            for label in ["settings", "chat", "food-panel", "work-panel"] {
+            for label in ["settings", "chat", "food-panel", "work-panel", "status-panel"] {
                 if let Some(win) = app.get_webview_window(label) {
                     let win_clone = win.clone();
                     win.on_window_event(move |event| {
@@ -112,18 +113,19 @@ pub fn run() {
                 }
             }
 
-            // 窗口初始位置 — 放在屏幕右下角且完整可见 (窗口 250x250 逻辑像素)
+            // 窗口初始位置 — 放在屏幕右下角且完整可见 (窗口 250x370 逻辑像素)
             if let Some(window) = app.get_webview_window("pet") {
                 let _ = window.set_always_on_top(true);
                 if let Ok(Some(m)) = window.primary_monitor() {
                     let size = m.size();          // 物理像素
                     let scale = m.scale_factor();
-                    // 窗口物理尺寸 = 250 逻辑 * 缩放; 留出右侧与底部任务栏边距
-                    let win_phys = (250.0 * scale) as i32;
+                    // 窗口物理尺寸 = 逻辑尺寸 * 缩放; 留出右侧与底部任务栏边距
+                    let win_w_phys = (250.0 * scale) as i32;
+                    let win_h_phys = (370.0 * scale) as i32;
                     let margin_right = (20.0 * scale) as i32;
                     let margin_bottom = (60.0 * scale) as i32;
-                    let x = (size.width as i32 - win_phys - margin_right).max(0);
-                    let y = (size.height as i32 - win_phys - margin_bottom).max(0);
+                    let x = (size.width as i32 - win_w_phys - margin_right).max(0);
+                    let y = (size.height as i32 - win_h_phys - margin_bottom).max(0);
                     let _ = window.set_position(tauri::Position::Physical(
                         tauri::PhysicalPosition::new(x, y),
                     ));

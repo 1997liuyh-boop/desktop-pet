@@ -34,24 +34,72 @@ const PROACTIVE_SCENE_CONTEXT_MIN_MS = 90000;
 const PROACTIVE_IDLE_MS = 180000;
 const PROACTIVE_SOFT_IDLE_MS = 90000;
 const PROACTIVE_SPEECH_MAX_CHARS = 72;
+const TTS_DEDUPE_WINDOW_MS = 3000;
+const PET_BODY_VIEWPORT_SIZE = 250;
+const FOOD_ANIMATION_LOGICAL_SIZE = 500;
+const PET_BUBBLE_AREA_HEIGHT = 80;
+const PET_BUBBLE_MAX_HEIGHT = PET_BUBBLE_AREA_HEIGHT - 12;
+const EDGE_CLIMB_STEP_PX = 12;
+const EDGE_CLIMB_MAX_MS = 180000;
+const GRAPH_TYPE_ALIASES = {
+  idle: [
+    'idle_yawning',
+    'idle_meow',
+    'idle_aside',
+    'idle_squat',
+    'idle_boring',
+    'idle_bubbles',
+    'idle_tennis',
+    'idle_amusement_b',
+    'idle_happy_like520',
+    'idle_meowlook',
+  ],
+  switch: ['switch_down', 'switch_up', 'switch_hunger', 'switch_thirsty'],
+  state: ['stateone', 'statetwo'],
+};
 
 // ── TTS 音频播放 ──
-function playBase64Wav(base64) {
+function playBase64Wav(base64, onEnded = null) {
+  let audioCtx = null;
+  let source = null;
+  let stopped = false;
+  let closed = false;
+
+  const finish = () => {
+    if (closed) return;
+    closed = true;
+    if (typeof onEnded === 'function') onEnded();
+    if (audioCtx) audioCtx.close().catch(() => {});
+  };
+
+  const handle = {
+    get closed() {
+      return closed;
+    },
+    stop() {
+      stopped = true;
+      try { if (source) source.stop(0); } catch (_) {}
+      try { if (source) source.disconnect(); } catch (_) {}
+      finish();
+    },
+  };
+
   try {
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const doPlay = (buffer) => {
-      const source = audioCtx.createBufferSource();
+      if (stopped) { finish(); return; }
+      source = audioCtx.createBufferSource();
       source.buffer = buffer;
       source.connect(audioCtx.destination);
+      source.onended = finish;
       source.start(0);
-      source.onended = () => audioCtx.close().catch(() => {});
     };
     const decode = () => {
       audioCtx.decodeAudioData(bytes.buffer.slice(0), doPlay,
-        (e) => { console.warn('TTS 解码失败:', e); audioCtx.close().catch(() => {}); });
+        (e) => { console.warn('TTS 解码失败:', e); finish(); });
     };
     // WebView2/Chrome 可能在无用户手势时挂起 AudioContext，先 resume 再播
     if (audioCtx.state === 'suspended') {
@@ -61,11 +109,16 @@ function playBase64Wav(base64) {
     }
   } catch (e) {
     console.warn('TTS 播放失败:', e);
+    finish();
   }
+
+  return handle;
 }
 
 // ── 帧缓存 ──
 const frameCache = new Map(); // path → Image
+// phases 元数据缓存：避免对同一动画重复发起 IPC 调用
+const phasesCache = new Map(); // "graphType|mode" → phases
 
 async function loadImage(base64) {
   return new Promise((resolve, reject) => {
@@ -119,7 +172,60 @@ class AnimationPlayer {
     this.foodIndex = 0;
     this.foodAccumulator = 0;
     this.foodImage = null;       // 食物图 Image 对象
-    this.foodDone = false;       // 关键帧播放一次后定格
+    this.foodDone = false;
+    this.frontDone = false;
+    this.mainLoopDone = false;
+    this.syncOverlayToMainLoop = false;
+    this.overlayLoopDuration = 0;
+    this.overlayLoopAccumulator = 0;
+    this.pendingOverlayEnd = false;
+    this.onLoopCycle = null;
+  }
+
+  _frameDuration(frame, fallback = 125) {
+    const duration = Number(frame?.duration ?? frame?.time ?? fallback);
+    return Number.isFinite(duration) && duration > 0 ? duration : fallback;
+  }
+
+  _foodFrameDuration(frame, fallback = 125) {
+    const duration = Number(frame?.time ?? frame?.duration ?? fallback);
+    return Number.isFinite(duration) && duration > 0 ? duration : fallback;
+  }
+
+  _sumDurations(frames, durationKey = 'duration') {
+    return (frames || []).reduce((sum, frame) => {
+      const duration = durationKey === 'time'
+        ? this._foodFrameDuration(frame)
+        : this._frameDuration(frame);
+      return sum + duration;
+    }, 0);
+  }
+
+  _resetSyncedLoopLayers() {
+    const frames = this.phases.b_loop || [];
+    this.currentIndex = 0;
+    this.accumulator = 0;
+    this.mainLoopDone = false;
+    if (frames.length > 0) this._updateCurrentFrame();
+
+    this.frontIndex = 0;
+    this.frontAccumulator = 0;
+    this.frontDone = false;
+    if (this.frontFrames.length > 0) this._updateFrontFrame();
+    else this.frontImage = null;
+
+    this.foodIndex = 0;
+    this.foodAccumulator = 0;
+    this.foodDone = false;
+  }
+
+  _emitLoopCycle(meta = {}) {
+    if (typeof this.onLoopCycle !== 'function') return;
+    try {
+      this.onLoopCycle(meta);
+    } catch (e) {
+      console.warn('循环回调失败:', e);
+    }
   }
 
   // 设置动画数据
@@ -136,14 +242,42 @@ class AnimationPlayer {
     if (this.frontFrames.length > 0) this._updateFrontFrame();
     // 食物中间层关键帧 (由 manifest food_anim 提供)
     this.foodKeyframes = phases.food_anim || [];
+    this.overlayLoopDuration = Math.max(
+      this._sumDurations(this.phases.b_loop),
+      this._sumDurations(this.frontFrames),
+      this._sumDurations(this.foodKeyframes, 'time'),
+    );
     this.foodIndex = 0;
     this.foodAccumulator = 0;
     this.foodDone = false;
+    this.frontDone = false;
+    this.mainLoopDone = false;
+    this.syncOverlayToMainLoop = false;
+    this.overlayLoopAccumulator = 0;
+    this.pendingOverlayEnd = false;
   }
 
   // 设置食物图 (吃饭/喝水时由后端返回的 foodImage 提供)
   setFoodImage(img) {
     this.foodImage = img || null;
+    this.syncOverlayToMainLoop = !!img;
+    this.frontIndex = 0;
+    this.frontAccumulator = 0;
+    this.frontDone = false;
+    this.foodIndex = 0;
+    this.foodAccumulator = 0;
+    this.foodDone = false;
+    this.mainLoopDone = false;
+    this.overlayLoopAccumulator = 0;
+    this.pendingOverlayEnd = false;
+    if (this.syncOverlayToMainLoop) {
+      if (this.currentPhase === 'b_loop') {
+        this.currentIndex = 0;
+        this.accumulator = 0;
+        this._updateCurrentFrame();
+      }
+      if (this.frontFrames.length > 0) this._updateFrontFrame();
+    }
   }
 
   // 开始播放
@@ -159,9 +293,11 @@ class AnimationPlayer {
     this.accumulator = 0;
     this.frontIndex = 0;
     this.frontAccumulator = 0;
+    this.frontDone = false;
     this.foodIndex = 0;
     this.foodAccumulator = 0;
     this.foodDone = false;
+    this.mainLoopDone = false;
     this.isPlaying = true;
     this._updateCurrentFrame();
     if (this.frontFrames.length > 0) this._updateFrontFrame();
@@ -182,45 +318,97 @@ class AnimationPlayer {
       return;
     }
 
-    this.accumulator += dt;
-
-    while (this.accumulator >= this.currentDuration && this.isPlaying) {
-      this.accumulator -= this.currentDuration;
-      this.currentIndex++;
-
-      if (this.currentIndex >= frames.length) {
-        if (this.currentPhase === 'b_loop') {
-          this.currentIndex = 0;
-        } else {
-          this._advancePhase();
-          return;
-        }
-      }
-
-      this._updateCurrentFrame();
+    const syncSingleRun = this.syncOverlayToMainLoop && this.currentPhase === 'b_loop';
+    if (!syncSingleRun && this.currentPhase === 'b_loop') {
+      this.mainLoopDone = false;
+    }
+    if (syncSingleRun && this.overlayLoopDuration > 0) {
+      this.overlayLoopAccumulator += dt;
     }
 
-    // 前景叠加层独立推进
-    if (this.frontFrames.length > 0 && this.frontDuration > 0) {
+    if (!this.mainLoopDone) {
+      this.accumulator += dt;
+
+      while (this.accumulator >= this._frameDuration({ duration: this.currentDuration }) && this.isPlaying) {
+        this.accumulator -= this._frameDuration({ duration: this.currentDuration });
+        this.currentIndex++;
+
+        if (this.currentIndex >= frames.length) {
+          if (this.currentPhase === 'b_loop') {
+            if (syncSingleRun) {
+              this.currentIndex = Math.max(0, frames.length - 1);
+              this.accumulator = 0;
+              this.mainLoopDone = true;
+              this._updateCurrentFrame();
+              break;
+            }
+            this.currentIndex = 0;
+            this._updateCurrentFrame();
+            this._emitLoopCycle({ composite: false });
+            if (!this.isPlaying || this.currentPhase !== 'b_loop') return;
+            continue;
+          } else {
+            this._advancePhase();
+            return;
+          }
+        }
+
+        this._updateCurrentFrame();
+      }
+    }
+
+    // 前景叠加层推进；夹心动作跟随复合周期统一复位，普通动作继续循环
+    if (this.frontFrames.length > 0 && this.frontDuration > 0 && !this.frontDone) {
       this.frontAccumulator += dt;
       while (this.frontAccumulator >= this.frontDuration) {
         this.frontAccumulator -= this.frontDuration;
-        this.frontIndex = (this.frontIndex + 1) % this.frontFrames.length;
+        this.frontIndex++;
+        if (this.frontIndex >= this.frontFrames.length) {
+          if (syncSingleRun) {
+            this.frontIndex = Math.max(0, this.frontFrames.length - 1);
+            this.frontAccumulator = 0;
+            this.frontDone = true;
+            this._updateFrontFrame();
+            break;
+          }
+          this.frontIndex = 0;
+        }
         this._updateFrontFrame();
       }
     }
 
-    // 食物中间层关键帧推进 (随 b_loop 持续循环，保证每次张口都能看到食物)
-    if (this.foodKeyframes.length > 0) {
+    // 食物中间层关键帧推进；夹心动作跟随复合周期统一复位，避免身体/手/杯子逐圈错位
+    if (this.foodKeyframes.length > 0 && !this.foodDone) {
       this.foodAccumulator += dt;
       let kf = this.foodKeyframes[this.foodIndex];
-      while (kf && this.foodAccumulator >= kf.time) {
-        this.foodAccumulator -= kf.time;
+      while (kf && this.foodAccumulator >= this._foodFrameDuration(kf)) {
+        this.foodAccumulator -= this._foodFrameDuration(kf);
         this.foodIndex++;
         if (this.foodIndex >= this.foodKeyframes.length) {
-          this.foodIndex = 0; // 循环回头，不再定格
+          if (syncSingleRun) {
+            this.foodIndex = Math.max(0, this.foodKeyframes.length - 1);
+            this.foodAccumulator = 0;
+            this.foodDone = true;
+            break;
+          }
+          this.foodIndex = 0;
         }
         kf = this.foodKeyframes[this.foodIndex];
+      }
+    }
+
+    if (syncSingleRun && this.overlayLoopDuration > 0) {
+      while (this.overlayLoopAccumulator >= this.overlayLoopDuration && this.isPlaying && this.currentPhase === 'b_loop') {
+        this.overlayLoopAccumulator -= this.overlayLoopDuration;
+        this._emitLoopCycle({ composite: true });
+        if (!this.isPlaying) return;
+        if (this.pendingOverlayEnd) {
+          this.pendingOverlayEnd = false;
+          this._advancePhase();
+          return;
+        }
+        if (this.currentPhase !== 'b_loop') return;
+        this._resetSyncedLoopLayers();
       }
     }
   }
@@ -266,10 +454,25 @@ class AnimationPlayer {
     }
   }
 
+  // 直接跳到 c_end，用于只播放落地/收尾段
+  goToEnd() {
+    if (this.phases.c_end.length > 0) {
+      this.currentPhase = 'c_end';
+      this.currentIndex = 0;
+      this.accumulator = 0;
+      this.isPlaying = true;
+      this._updateCurrentFrame();
+    }
+  }
+
   // 触发结束动画 (从 b_loop 切到 c_end)
   triggerEnd(onComplete) {
     if (this.phases.c_end.length > 0 && this.currentPhase === 'b_loop') {
       this.onComplete = onComplete;
+      if (this.syncOverlayToMainLoop && this.overlayLoopDuration > 0) {
+        this.pendingOverlayEnd = true;
+        return;
+      }
       this.currentPhase = 'c_end';
       this.currentIndex = 0;
       this.accumulator = 0;
@@ -287,7 +490,7 @@ class AnimationPlayer {
     const frame = frames[this.currentIndex];
     if (!frame) return;
 
-    this.currentDuration = frame.duration;
+    this.currentDuration = this._frameDuration(frame);
     this.currentImage = frameCache.get(frame.file) || null;
   }
 
@@ -366,13 +569,9 @@ class ToolBar {
         if (col.id === 'feed') { this._showFeedSub(tab); }
         else if (col.id === 'interact') { this._showInteractSub(tab); }
         else if (col.id === 'system') { this._showSystemSub(tab); }
-        else if (col.id === 'diy') { this.app.showBubble('暂无自定功能', 1500); }
+        else if (col.id === 'diy') { this.hide(); this.app.showBubble('暂无自定功能', 1500); }
         else if (col.id === 'panel') { this._showPanel(); }
       });
-
-      if (col.id === 'panel') {
-        tab.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); this._showPanel(); });
-      }
 
       this.el.appendChild(tab);
     });
@@ -472,7 +671,7 @@ class ToolBar {
 
   // 食物菜单 — 打开独立弹窗
   async _showFoodMenu(graphFilter = null) {
-    this._hideSubmenu();
+    this.hide();
     try {
       await invoke('open_food_panel', { filter: graphFilter });
     } catch (_) {
@@ -482,7 +681,7 @@ class ToolBar {
 
   // 工作面板 — 打开独立弹窗
   async _showWorkPanel(kind) {
-    this._hideSubmenu();
+    this.hide();
     try {
       await invoke('open_work_panel', { kind: kind || 'work' });
     } catch (_) {
@@ -506,8 +705,8 @@ class ToolBar {
 
   _showSystemSub(anchor) {
     this._showSubmenu(anchor, [
-      { label: '⚙ 设置', action: () => this.app.settingsUI.show() },
-      { label: '🚪 退出', action: () => { if (confirm('确定要退出桌宠吗？')) invoke('quit_app', {}); } },
+      { label: '⚙ 设置', action: () => { this.hide(); this.app.settingsUI.show(); } },
+      { label: '🚪 退出', action: () => { this.hide(); if (confirm('确定要退出桌宠吗？')) invoke('quit_app', {}); } },
     ]);
   }
 
@@ -566,6 +765,7 @@ class ToolBar {
   // ── 状态面板弹窗 — 独立 Tauri 窗口 ──
 
   async _showPanel() {
+    this.hide();
     try {
       await invoke('open_status_panel', {});
     } catch (_) {
@@ -657,6 +857,9 @@ class DesktopPetApp {
     this._dragStartX = 0;
     this._dragStartY = 0;
     this._dragLastDx = 0;
+    this._dragLastDy = 0;
+    this._dragTotalDx = 0;
+    this._dragTotalDy = 0;
     this._dragReleaseTimer = null;
     this._pressStartTime = 0;
     this._pressTimer = null;
@@ -696,6 +899,29 @@ class DesktopPetApp {
     this._manualAnimTimer = null;  // 手动动画锁定定时器句柄
     this._animatingLock = false;   // 防止并发 playAnimation
     this._clickthroughEnabled = false;  // 当前是否已启用点击穿透
+    this._clickthroughCheckBusy = false;
+    this._clickthroughLastCheckAt = 0;
+    this._walkTickBusy = false;
+    this._lastWalkTickAt = 0;
+    this._walkPendingGraphType = null;
+    this._walkPendingStartedAt = 0;
+    this._walkRunGraphType = null;
+    this._walkEndPending = false;
+    this._edgeMoveUntil = 0;
+    this._edgeMoveDy = 0;
+    this._edgeMoveGraphType = null;
+    this._edgeClimbActive = false;
+    this._edgeClimbOriginSide = null;
+    this._edgeClimbSide = null;
+    this._edgeClimbStage = 'none';
+    this._edgeClimbTopDirection = 1;
+    this._edgeClimbBottomDirection = -1;
+    this._edgeClimbStartedAt = 0;
+    this._edgeClimbMaxUntil = 0;
+    this._edgeClimbTopY = 0;
+    this._animationLoadSeq = 0;
+    this._opaqueTopCache = null;
+    this._opaqueTopCacheAt = 0;
     this._toolbarActive = false;   // 工具栏或子菜单打开时禁止侧边隐藏/行走
     this._auxWindowActive = false;  // 聊天/设置窗口打开时禁止侧边隐藏/行走
     this._auxWindowTimer = null;    // 辅助窗口可见状态轮询
@@ -703,6 +929,7 @@ class DesktopPetApp {
     this._currentWorkContext = null;
     this._resumeWorkTimer = null;
     this._feedingGraph = null;
+    this._manifest = null;
     this._manifestAnimations = new Set();
     this._musicTimer = null;
     this._chatterTimer = null;
@@ -711,6 +938,7 @@ class DesktopPetApp {
     this._chatterTopicIndex = Math.floor(Math.random() * CHATTER_TOPICS.length);
     this._chatterHistory = [];  // 话痨模式专用历史，用于防重复
     this._musicActive = false;
+    this._musicGraphType = null;
     this._musicAboveSince = 0;
     this._musicLastSeenAt = 0;
     this._musicAverage = 0;
@@ -721,6 +949,12 @@ class DesktopPetApp {
     this._lastRenderImage = null;
     this._thinkingBubble = null; // LLM 等待中的思考气泡元素
     this._thinkingTimer = null;  // 思考点点计时器
+    this._ttsCurrentAudio = null;
+    this._ttsActiveText = '';
+    this._ttsBusyUntil = 0;
+    this._ttsSeq = 0;
+    this._lastSpokenText = '';
+    this._lastSpokenAt = 0;
 
     // 心情追踪 (用于心情变化通知)
     this._prevMood = 'normal';
@@ -745,6 +979,7 @@ class DesktopPetApp {
 
       try {
         const manifest = await invoke('get_manifest', {});
+        this._manifest = manifest || null;
         this._manifestAnimations = new Set(Object.keys((manifest && manifest.animations) || {}));
       } catch (e) {
         console.warn('动画清单索引失败:', e);
@@ -762,6 +997,9 @@ class DesktopPetApp {
         }
       }
       if (!loadOk) throw new Error('默认动画加载失败，请检查资源路径');
+
+      // 2.5 后台预热常用动画（不阻塞启动流程）
+      setTimeout(() => this._warmupCommon().catch(() => {}), 1500);
 
       // 3. 绑定交互事件
       this._bindEvents();
@@ -885,7 +1123,7 @@ class DesktopPetApp {
           this._markChatActive(Math.max(12000, e.payload.length * 80));
           this._recordInteraction('chat', { label: 'reply', duration: 1200 });
           this.showBubble(e.payload, Math.max(3000, e.payload.length * 80));
-          this._ttsSpeak(e.payload);
+          if (!this._isSpeechBusy()) this._ttsSpeak(e.payload).catch(() => {});
         }
       }).catch(() => {});
 
@@ -917,8 +1155,8 @@ class DesktopPetApp {
       // 4.5 自主行走 — 每 120ms tick 一次
       this._walkTimer = setInterval(() => this._walkTick(), 120);
 
-      // 4.6 点击穿透轮询 — 每 150ms 检测鼠标是否在宠物精灵上
-      this._clickthroughInterval = setInterval(() => this._checkClickthrough(), 150);
+      // 4.6 点击穿透轮询 — 保留全局兜底，但避免抢占动画渲染
+      this._clickthroughInterval = setInterval(() => this._checkClickthrough(), 140);
 
       // 4.7 环境互动: 音乐跳舞 + 空闲捣蛋 + 20 秒主动闲聊
       this._musicTimer = setInterval(() => this._musicTick().catch(() => {}), MUSIC_POLL_MS);
@@ -957,11 +1195,130 @@ class DesktopPetApp {
     return !!(target && target.closest && target.closest('#pet-toolbar, .tb-submenu, .tb-panel, #chat-panel'));
   }
 
+  _setClickthrough(enabled) {
+    if (this._clickthroughEnabled === enabled) return;
+    this._clickthroughEnabled = enabled;
+    invoke('set_clickthrough', { enabled }).catch(() => {});
+  }
+
+  _cursorClientPoint(pos, cursorPos) {
+    if (!pos || !cursorPos) return null;
+
+    const cursorX = Number(cursorPos.x);
+    const cursorY = Number(cursorPos.y);
+    const winX = Number(pos.x);
+    const winY = Number(pos.y);
+    const winW = Number(pos.width);
+    const winH = Number(pos.height);
+    if (![cursorX, cursorY, winX, winY, winW, winH].every(Number.isFinite)) return null;
+
+    const screenCandidate = {
+      x: cursorX - winX,
+      y: cursorY - winY,
+      inWindow: cursorX >= winX && cursorX <= winX + winW
+        && cursorY >= winY && cursorY <= winY + winH,
+    };
+    const relCandidate = {
+      x: cursorX,
+      y: cursorY,
+      inWindow: cursorX >= 0 && cursorX <= winW
+        && cursorY >= 0 && cursorY <= winH,
+    };
+    const local = cursorPos.screen === true
+      ? (screenCandidate.inWindow ? screenCandidate : null)
+      : (screenCandidate.inWindow ? screenCandidate : (relCandidate.inWindow ? relCandidate : null));
+    if (!local) return null;
+
+    const viewportWidth = Math.max(1, window.innerWidth || this.canvas.width);
+    const viewportHeight = Math.max(1, window.innerHeight || this.canvas.height);
+    return {
+      x: local.x * (viewportWidth / Math.max(1, winW)),
+      y: local.y * (viewportHeight / Math.max(1, winH)),
+    };
+  }
+
+  _canvasPointFromClient(clientX, clientY) {
+    const rect = this.canvas.getBoundingClientRect();
+    const localX = clientX - rect.left;
+    const localY = clientY - rect.top;
+    if (localX < 0 || localY < 0 || localX >= rect.width || localY >= rect.height) return null;
+    return {
+      x: localX * (this.canvas.width / Math.max(1, rect.width)),
+      y: localY * (this.canvas.height / Math.max(1, rect.height)),
+    };
+  }
+
+  _hasOpaqueCanvasPixel(canvasX, canvasY) {
+    if (!Number.isFinite(canvasX) || !Number.isFinite(canvasY)) return false;
+    if (canvasX < 0 || canvasY < 0 || canvasX >= this.canvas.width || canvasY >= this.canvas.height) return false;
+
+    const offsets = [
+      [0, 0],
+      [-1, 0], [1, 0], [0, -1], [0, 1],
+      [-2, 0], [2, 0], [0, -2], [0, 2],
+      [-2, -2], [2, -2], [-2, 2], [2, 2],
+      [-3, 0], [3, 0], [0, -3], [0, 3],
+    ];
+
+    try {
+      const baseX = Math.floor(canvasX);
+      const baseY = Math.floor(canvasY);
+      for (const [ox, oy] of offsets) {
+        const pixelX = baseX + ox;
+        const pixelY = baseY + oy;
+        if (pixelX < 0 || pixelY < 0 || pixelX >= this.canvas.width || pixelY >= this.canvas.height) continue;
+        const pixelData = this.ctx.getImageData(pixelX, pixelY, 1, 1);
+        if (pixelData && pixelData.data[3] > 16) return true;
+      }
+    } catch (_) {}
+
+    return false;
+  }
+
+  _isBubbleClientHit(clientX, clientY) {
+    const bubble = this._currentBubble;
+    if (!bubble || !bubble.parentNode) return false;
+    const rect = bubble.getBoundingClientRect();
+    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+  }
+
+  _measureOpaqueCanvasTop() {
+    try {
+      const W = this.canvas.width;
+      const H = this.canvas.height;
+      const data = this.ctx.getImageData(0, 0, W, H).data;
+      for (let y = 0; y < H; y += 2) {
+        const row = y * W * 4;
+        for (let x = 0; x < W; x += 2) {
+          if (data[row + x * 4 + 3] > 24) return y;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  _updateBubblePlacement() {
+    const bubble = this._currentBubble;
+    if (!bubble || !bubble.parentNode) return;
+    const viewportHeight = Math.max(1, window.innerHeight || this.canvas.height);
+    const bubbleHeight = Math.ceil(bubble.getBoundingClientRect().height || 0);
+    const opaqueTop = this._measureOpaqueCanvasTop();
+    if (opaqueTop === null) return;
+
+    const bottomY = Math.max(
+      bubbleHeight + 4,
+      Math.min(viewportHeight - 2, opaqueTop - 3)
+    );
+    bubble.style.bottom = `${Math.max(0, viewportHeight - bottomY)}px`;
+  }
+
   _pointerLogicalFromEvent(e) {
     const rect = this.canvas.getBoundingClientRect();
-    const cx = e.target === this.canvas && e.offsetX !== undefined ? e.offsetX : e.clientX - rect.left;
-    const cy = e.target === this.canvas && e.offsetY !== undefined ? e.offsetY : e.clientY - rect.top;
-    if (cx < 0 || cy < 0 || cx > rect.width || cy > rect.height) return null;
+    const cssX = e.target === this.canvas && e.offsetX !== undefined ? e.offsetX : e.clientX - rect.left;
+    const cssY = e.target === this.canvas && e.offsetY !== undefined ? e.offsetY : e.clientY - rect.top;
+    if (cssX < 0 || cssY < 0 || cssX > rect.width || cssY > rect.height) return null;
+    const cx = cssX * (this.canvas.width / Math.max(1, rect.width));
+    const cy = cssY * (this.canvas.height / Math.max(1, rect.height));
     return this._canvasToLogical(cx, cy);
   }
 
@@ -980,6 +1337,9 @@ class DesktopPetApp {
     this._dragStartX = e.screenX;
     this._dragStartY = e.screenY;
     this._dragLastDx = 0;
+    this._dragLastDy = 0;
+    this._dragTotalDx = 0;
+    this._dragTotalDy = 0;
 
     const point = logicalPoint || this._pointerLogicalFromEvent(e);
     this._pressStartLogical = point || { x: 0, y: 0 };
@@ -1213,7 +1573,14 @@ class DesktopPetApp {
     }
 
     const feedback = this._interactionFeedback(entry);
-    if (feedback && !detail.suppressFeedback) this.showBubble(feedback, detail.duration || 1800);
+    if (feedback && !detail.suppressFeedback) {
+      this._speakProactive({ type: 'interaction', reason: feedback, label: detail.label || entry.label || entry.type }, {
+        fallbackWhenBlocked: false,
+        fallbackWhenUnavailable: false,
+        minIntervalMs: 6000,
+        typeMinIntervalMs: 10000,
+      }).catch(() => {});
+    }
     return entry;
   }
 
@@ -1276,7 +1643,8 @@ class DesktopPetApp {
 
     if (!context) return;
     await this._speakProactive(context, {
-      fallback: this._fallbackProactiveSpeech(context),
+      fallbackWhenBlocked: false,
+      fallbackWhenUnavailable: false,
       minIntervalMs: PROACTIVE_AI_MIN_MS,
       typeMinIntervalMs: PROACTIVE_AI_CONTEXT_MIN_MS,
     });
@@ -1355,7 +1723,8 @@ class DesktopPetApp {
       const speech = await this._speakProactive(
         { type: 'chatter', topic, recentChatter },
         {
-          fallback: this._fallbackProactiveSpeech({ type: 'chatter', topic }),
+          fallbackWhenBlocked: false,
+          fallbackWhenUnavailable: false,
           force: true,
           forceType: true,
           allowChatActive: true,
@@ -1372,9 +1741,14 @@ class DesktopPetApp {
     }
   }
 
+  _isSpeechBusy() {
+    return !!this._ttsCurrentAudio || !!this._ttsActiveText || performance.now() < this._ttsBusyUntil;
+  }
+
   _canUseProactiveAi(options = {}) {
     const now = performance.now();
     if (this._proactiveAiBusy) return false;
+    if (this._isSpeechBusy()) return false;
     if (this._dragging || this._manualSleepMode) return false;
     if (this._toolbarActive && !options.allowToolbarActive) return false;
     if (this._auxWindowActive && !options.allowAuxWindowActive) return false;
@@ -1399,35 +1773,6 @@ class DesktopPetApp {
     this._lastProactiveAt = now;
     if (!this._lastProactiveTypeAt) this._lastProactiveTypeAt = {};
     if (type) this._lastProactiveTypeAt[type] = now;
-  }
-
-  _fallbackProactiveSpeech(context = {}) {
-    const type = context.type || 'idle';
-    const label = context.label || context.workName || context.foodName || '';
-    const action = context.action || '';
-    const pools = {
-      idle: ['主人是不是忘记我了？摸摸头也可以呀。', '我在这里等你好久啦。', '主人，理理我嘛。'],
-      'idle-soft': ['摸摸头会让我开心一点。', '我有点想你啦。', '现在可以陪我一下吗？'],
-      annoyed: ['刚刚被戳得有点晕，我想休息一下。', '再戳就要躲起来了喵。'],
-      satisfied: ['已经很满足啦，陪我玩一会儿吧。', '吃饱喝足，想和主人贴贴。'],
-      mischief: action === 'nudge'
-        ? ['我就悄悄挪一下下。', '这不是捣乱，是桌面巡逻。']
-        : action === 'peek'
-          ? ['我来检查主人有没有偷懒。', '桌面巡逻中，发现主人一只。']
-          : ['刚刚不是我动的。', '我要表演一个无害小动作。'],
-      feed: [`${label || '这个'}看起来好香。`, `谢谢主人，我要开动啦。`],
-      drink: [`${label || '这个'}好像很好喝。`, '补充水分完成。'],
-      play: [`开始${label || '玩耍'}，主人也要开心。`, '玩耍时间到啦。'],
-      work: [`开始${label || '工作'}啦，我会努力的。`, '认真模式启动。'],
-      music: ['这首歌好像很适合跳舞。', '节奏来了，我要动起来。'],
-      chatter: [
-        `忽然想聊聊${context.topic || label || '今天'}，主人也在想事情吗？`,
-        '我刚刚看着桌面，觉得世界小小的也很热闹。',
-        '给主人念一句：风路过窗边，也把温柔带来了。',
-      ],
-    };
-    const choices = pools[type] || pools.idle;
-    return choices[Math.floor(Math.random() * choices.length)];
   }
 
   _interactionTypeLabel(type) {
@@ -1493,7 +1838,7 @@ class DesktopPetApp {
 
   async _resolveProactiveSpeech(context = {}, options = {}) {
     const type = context.type || 'idle';
-    const fallback = options.fallback !== undefined ? options.fallback : this._fallbackProactiveSpeech(context);
+    const fallback = options.fallback !== undefined ? options.fallback : null;
     const canUseAi = this._canUseProactiveAi({
       type,
       force: !!options.force,
@@ -1577,21 +1922,28 @@ class DesktopPetApp {
 
   async _speakProactive(context = {}, options = {}) {
     const isChatter = (context.type === 'chatter');
+    if (this._isSpeechBusy()) return null;
     if (isChatter) this._startThinkingDots();
-    const speech = await this._resolveProactiveSpeech(context, options);
-    if (isChatter) this._stopThinkingDots(speech);
+    let speech = null;
+    try {
+      speech = await this._resolveProactiveSpeech(context, options);
+    } finally {
+      if (isChatter) this._stopThinkingDots(speech);
+    }
     if (!speech) return null;
     this._markProactiveAi(context.type || 'idle');
     if (!isChatter) {
       const duration = options.duration || Math.max(2800, speech.length * 90);
       this.showBubble(speech, duration);
+      this._ttsSpeak(speech).catch(() => {});
     }
     return speech;
   }
 
   _speakSceneProactive(context = {}, options = {}) {
     return this._speakProactive(context, {
-      fallback: this._fallbackProactiveSpeech(context),
+      fallbackWhenBlocked: false,
+      fallbackWhenUnavailable: false,
       minIntervalMs: PROACTIVE_SCENE_AI_MIN_MS,
       typeMinIntervalMs: PROACTIVE_SCENE_CONTEXT_MIN_MS,
       allowToolbarActive: true,
@@ -1599,15 +1951,84 @@ class DesktopPetApp {
     });
   }
 
-  async _ttsSpeak(text) {
-    if (!text || !text.trim()) return;
+  _normalizeTtsText(text) {
+    return String(text || '').replace(/\s+/g, ' ').trim();
+  }
+
+  _stopCurrentTts() {
+    if (this._ttsCurrentAudio) {
+      try { this._ttsCurrentAudio.stop(); } catch (_) {}
+      this._ttsCurrentAudio = null;
+    }
+    this._ttsActiveText = '';
+    this._ttsBusyUntil = 0;
+  }
+
+  async _ttsSpeak(text, options = {}) {
+    const normalized = this._normalizeTtsText(text);
+    if (!normalized || !/[0-9A-Za-z\u4e00-\u9fff]/.test(normalized)) return false;
+
+    const now = performance.now();
+    const dedupeMs = Number(options.dedupeMs ?? TTS_DEDUPE_WINDOW_MS);
+    if (this._isSpeechBusy()) {
+      return false;
+    }
+    if (!options.force && normalized === this._ttsActiveText) {
+      return false;
+    }
+    if (!options.force && normalized === this._lastSpokenText && now - this._lastSpokenAt < dedupeMs) {
+      return false;
+    }
+
+    const seq = ++this._ttsSeq;
+    if (options.force) this._stopCurrentTts();
+    this._ttsActiveText = normalized;
+    this._ttsBusyUntil = Math.max(this._ttsBusyUntil, now + Math.max(3000, normalized.length * 140));
+    this._lastSpokenText = normalized;
+    this._lastSpokenAt = now;
+
     try {
       const hasTtsKey = await invoke('has_tts_api_key', {});
-      if (!hasTtsKey) return;
-      const base64Wav = await invoke('tts_speak', { text });
-      if (base64Wav) playBase64Wav(base64Wav);
+      if (!hasTtsKey || seq !== this._ttsSeq) {
+        if (seq === this._ttsSeq && this._ttsActiveText === normalized) {
+          this._ttsActiveText = '';
+          this._ttsBusyUntil = 0;
+        }
+        return false;
+      }
+      const base64Wav = await invoke('tts_speak', { text: normalized });
+      if (!base64Wav || seq !== this._ttsSeq) {
+        if (seq === this._ttsSeq && this._ttsActiveText === normalized) {
+          this._ttsActiveText = '';
+          this._ttsBusyUntil = 0;
+        }
+        return false;
+      }
+      let audio = null;
+      audio = playBase64Wav(base64Wav, () => {
+        if (this._ttsCurrentAudio === audio) this._ttsCurrentAudio = null;
+        if (seq === this._ttsSeq && this._ttsActiveText === normalized) {
+          this._ttsActiveText = '';
+          this._ttsBusyUntil = 0;
+        }
+      });
+      if (audio.closed) {
+        if (seq === this._ttsSeq && this._ttsActiveText === normalized) {
+          this._ttsActiveText = '';
+          this._ttsBusyUntil = 0;
+        }
+        return false;
+      } else {
+        this._ttsCurrentAudio = audio;
+        return true;
+      }
     } catch (e) {
+      if (seq === this._ttsSeq && this._ttsActiveText === normalized) {
+        this._ttsActiveText = '';
+        this._ttsBusyUntil = 0;
+      }
       console.warn('TTS 合成失败:', e);
+      return false;
     }
   }
 
@@ -1628,9 +2049,26 @@ class DesktopPetApp {
     }
   }
 
-  _hasAnimationGraph(graphType) {
-    if (this._manifestAnimations.size === 0 || this._manifestAnimations.has(graphType)) return true;
+  _graphTypeCandidates(graphType) {
+    const raw = String(graphType || 'default');
+    const aliases = GRAPH_TYPE_ALIASES[raw] || [];
+    return aliases.length ? [...aliases, raw] : [raw];
+  }
+
+  _isGraphAvailable(graphType) {
+    if (this._manifestAnimations.size === 0) return true;
+    if (this._manifestAnimations.has(graphType)) return true;
     return graphType.startsWith('move.') && this._manifestAnimations.has('move');
+  }
+
+  _resolveGraphType(graphType) {
+    const raw = String(graphType || 'default');
+    if (this._manifestAnimations.size === 0) return raw;
+    return this._graphTypeCandidates(raw).find((candidate) => this._isGraphAvailable(candidate)) || raw;
+  }
+
+  _hasAnimationGraph(graphType) {
+    return this._graphTypeCandidates(graphType).some((candidate) => this._isGraphAvailable(candidate));
   }
 
   _canAmbientAct(options = {}) {
@@ -1647,30 +2085,294 @@ class DesktopPetApp {
   }
 
   _pickAmbientGraph(candidates, fallback = 'default') {
-    return candidates.find((graph) => this._hasAnimationGraph(graph)) || fallback;
+    const found = candidates.find((graph) => this._hasAnimationGraph(graph));
+    return this._resolveGraphType(found || fallback);
   }
 
   _resolveWalkGraphType(result) {
     if (!result) return null;
     const graphType = result.graphType || 'default';
-    if (graphType.startsWith('move.climb.') || graphType.startsWith('move.crawl.') || graphType.startsWith('move.fall.')) {
-      return graphType;
+    if (graphType.startsWith('move.climb.') || graphType.startsWith('move.crawl.')) {
+      return this._edgeGraphCandidates(graphType, result)[0];
     }
-    if (graphType.startsWith('move.walk.')) return graphType;
+    if (graphType.startsWith('move.walk.')) return this._walkGraphCandidates(graphType, result)[0];
     if (graphType !== 'move' && !result.walking) {
-      return ['default', 'think'].includes(graphType) ? graphType : 'default';
+      const idleGraph = ['default', 'idle', 'think', 'switch', 'state', 'stateone', 'statetwo'].includes(graphType)
+        ? graphType
+        : 'default';
+      return this._resolveGraphType(idleGraph);
     }
 
     const direction = result.facingRight === false ? 'left' : 'right';
-    const speed = Number(result.speedPxPerSec || 80);
-    const suffix = (this.mode === 'poorCondition' || this.mode === 'ill' || speed <= 65)
+    const mood = this.mode || 'normal';
+    const suffix = (mood === 'poorCondition' || mood === 'ill')
       ? '.slow'
-      : (speed >= 110 ? '.faster' : '');
-    return `move.walk.${direction}${suffix}`;
+      : (mood === 'happy' ? '.faster' : '');
+    return this._walkGraphCandidates(`move.walk.${direction}${suffix}`, result)[0];
+  }
+
+  _walkGraphCandidates(graphType, result = {}) {
+    const raw = String(graphType || '');
+    const match = raw.match(/^move\.walk\.(left|right)(?:\.(slow|faster))?$/);
+    const direction = match?.[1] || (result.facingRight === false ? 'left' : 'right');
+    const suffix = match?.[2] ? `.${match[2]}` : '';
+    const candidates = [
+      `move.walk.${direction}${suffix}`,
+      `move.walk.${direction}`,
+      `move.walk.${direction}.slow`,
+      `move.walk.${direction}.faster`,
+    ];
+    return [...new Set(candidates)].map((graph) => this._resolveGraphType(graph));
+  }
+
+  _edgeGraphCandidates(graphType, result = {}) {
+    const raw = String(graphType || '');
+    const match = raw.match(/^move\.(climb(?:\.top)?|crawl)\.(left|right)$/);
+    const side = match?.[2] || result.edgeSide || (result.facingRight === false ? 'left' : 'right');
+    const candidates = [
+      match ? raw : `move.climb.${side}`,
+      `move.climb.${side}`,
+      `move.climb.top.${side}`,
+      `move.crawl.${side}`,
+      'idle',
+    ];
+    return [...new Set(candidates)].map((graph) => this._resolveGraphType(graph));
+  }
+
+  _screenBounds(screen, pos) {
+    const screenW = Math.max(0, Math.round(Number(screen?.workAreaWidth) || 0));
+    const screenH = Math.max(0, Math.round(Number(screen?.workAreaHeight) || 0));
+    const windowW = Math.max(0, Math.round(Number(pos?.width) || 0));
+    const windowH = Math.max(0, Math.round(Number(pos?.height) || 0));
+    return {
+      maxX: Math.max(0, screenW - windowW),
+      maxY: Math.max(0, screenH - windowH),
+    };
+  }
+
+  _visiblePetTopOffsetPx(windowHeightPx = null) {
+    const measuredTop = this._measureOpaqueCanvasTop();
+    const canvasH = Math.max(1, this.canvas.height || window.innerHeight || 0);
+    const physicalH = Math.max(1, Number(windowHeightPx) || canvasH);
+    const scale = physicalH / canvasH;
+    const fallbackTop = Math.max(0, canvasH - PET_BODY_VIEWPORT_SIZE);
+    const top = Number.isFinite(measuredTop) ? measuredTop : fallbackTop;
+    return Math.max(0, Math.round(top * scale));
+  }
+
+  _refreshEdgeClimbTopY(pos) {
+    const offset = this._visiblePetTopOffsetPx(pos?.height);
+    const nextTopY = -offset;
+    if (!Number.isFinite(nextTopY)) return;
+    this._edgeClimbTopY = Math.min(Math.round(Number(this._edgeClimbTopY) || 0), nextTopY);
+  }
+
+  _clampWindowTarget(x, y, bounds) {
+    return {
+      x: Math.max(0, Math.min(bounds.maxX, Math.round(x))),
+      y: Math.max(0, Math.min(bounds.maxY, Math.round(y))),
+    };
+  }
+
+  _clampEdgeClimbTarget(x, y, bounds) {
+    const minY = Math.min(0, Math.round(Number(this._edgeClimbTopY) || 0));
+    return {
+      x: Math.max(0, Math.min(bounds.maxX, Math.round(x))),
+      y: Math.max(minY, Math.min(bounds.maxY, Math.round(y))),
+    };
+  }
+
+  _clearEdgeClimbState(options = {}) {
+    this._edgeMoveUntil = 0;
+    this._edgeMoveDy = 0;
+    this._edgeMoveGraphType = null;
+    this._edgeClimbActive = false;
+    this._edgeClimbOriginSide = null;
+    this._edgeClimbSide = null;
+    this._edgeClimbStage = 'none';
+    this._edgeClimbTopDirection = 1;
+    this._edgeClimbBottomDirection = -1;
+    this._edgeClimbStartedAt = 0;
+    this._edgeClimbMaxUntil = 0;
+    this._edgeClimbTopY = 0;
+    this._walkRunGraphType = null;
+    this._walkEndPending = false;
+    this._walkPendingGraphType = null;
+    if (options.pauseMs) this._walkPauseUntil = performance.now() + options.pauseMs;
+    if (options.playDefault) {
+      this._walkGraphType = 'default';
+      this.playAnimation('default', this.mode || 'normal', null, { ambient: true }).catch(() => {});
+    }
+  }
+
+  _edgeGraphForStage(stage, side, direction) {
+    const safeSide = side === 'right' ? 'right' : 'left';
+    if (stage === 'top') {
+      return direction >= 0 ? 'move.climb.top.right' : 'move.climb.top.left';
+    }
+    if (stage === 'bottom') {
+      return direction >= 0 ? 'move.crawl.right' : 'move.crawl.left';
+    }
+    return `move.climb.${safeSide}`;
+  }
+
+  async _playEdgeClimbGraph(graphType, side) {
+    if (!graphType || this._edgeMoveGraphType === graphType) return graphType;
+    const candidates = this._edgeGraphCandidates(graphType, { edgeSide: side });
+    const preferredGraph = candidates[0];
+    this._edgeMoveGraphType = preferredGraph;
+    this._walkPendingGraphType = preferredGraph;
+    this._walkPendingStartedAt = performance.now();
+    const loadedGraph = await this._playAmbientGraphWithFallback(candidates, this.mode, { force: true });
+    if (loadedGraph) {
+      this._walkGraphType = loadedGraph;
+      this._edgeMoveGraphType = loadedGraph;
+    }
+    if (this._walkPendingGraphType === preferredGraph) this._walkPendingGraphType = null;
+    return loadedGraph;
+  }
+
+  async _moveWindowTowardEdgeTarget(pos, target) {
+    const dx = target.x - Math.round(Number(pos?.x) || 0);
+    const dy = target.y - Math.round(Number(pos?.y) || 0);
+    if (dx !== 0 || dy !== 0) {
+      await invoke('move_window_by', { dx, dy });
+    }
+  }
+
+  async _startEdgeClimb(result, pos, screen) {
+    const bounds = this._screenBounds(screen, pos);
+    const hitSide = result.edgeSide === 'right' ? 'right' : 'left';
+    const edgeX = hitSide === 'right' ? bounds.maxX : 0;
+    const target = this._clampWindowTarget(edgeX, pos.y, bounds);
+
+    await this._moveWindowTowardEdgeTarget(pos, target).catch(() => {});
+
+    this._edgeClimbActive = true;
+    this._edgeClimbOriginSide = hitSide;
+    this._edgeClimbSide = hitSide;
+    this._edgeClimbStage = 'side-up';
+    this._edgeClimbTopDirection = hitSide === 'left' ? 1 : -1;
+    this._edgeClimbBottomDirection = hitSide === 'left' ? -1 : 1;
+    this._edgeClimbStartedAt = performance.now();
+    this._edgeClimbMaxUntil = this._edgeClimbStartedAt + EDGE_CLIMB_MAX_MS;
+    this._edgeClimbTopY = -this._visiblePetTopOffsetPx(pos?.height);
+    this._edgeMoveUntil = 0;
+    this._edgeMoveDy = 0;
+    this._walkPauseUntil = this._edgeClimbMaxUntil;
+    this._walkRunGraphType = null;
+    this._walkEndPending = false;
+
+    await this._playEdgeClimbGraph(this._edgeGraphForStage('side-up', hitSide, 0), hitSide);
+  }
+
+  async _advanceEdgeClimb(pos, screen) {
+    if (!this._edgeClimbActive) return false;
+    const now = performance.now();
+    if (now > this._edgeClimbMaxUntil) {
+      this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+      return false;
+    }
+
+    const bounds = this._screenBounds(screen, pos);
+    const step = EDGE_CLIMB_STEP_PX;
+    this._refreshEdgeClimbTopY(pos);
+    const topY = Math.round(Number(this._edgeClimbTopY) || 0);
+    const x = Math.round(Number(pos?.x) || 0);
+    const y = Math.round(Number(pos?.y) || 0);
+    let stage = this._edgeClimbStage;
+    let side = this._edgeClimbSide === 'right' ? 'right' : 'left';
+    let target = { x, y };
+    let graphType = null;
+
+    if (stage === 'side-up') {
+      const edgeX = side === 'right' ? bounds.maxX : 0;
+      target = this._clampEdgeClimbTarget(edgeX, y - step, bounds);
+      graphType = this._edgeGraphForStage(stage, side, -1);
+      if (target.y <= topY) {
+        stage = 'top';
+        this._edgeClimbStage = stage;
+        graphType = this._edgeGraphForStage(stage, side, this._edgeClimbTopDirection);
+      }
+    } else if (stage === 'top') {
+      const dir = this._edgeClimbTopDirection >= 0 ? 1 : -1;
+      target = this._clampEdgeClimbTarget(x + dir * step, topY, bounds);
+      graphType = this._edgeGraphForStage(stage, side, dir);
+      if ((dir > 0 && target.x >= bounds.maxX) || (dir < 0 && target.x <= 0)) {
+        side = dir > 0 ? 'right' : 'left';
+        this._edgeClimbSide = side;
+        stage = 'side-down';
+        this._edgeClimbStage = stage;
+        graphType = this._edgeGraphForStage(stage, side, 1);
+      }
+    } else if (stage === 'side-down') {
+      const edgeX = side === 'right' ? bounds.maxX : 0;
+      target = this._clampEdgeClimbTarget(edgeX, y + step, bounds);
+      graphType = this._edgeGraphForStage(stage, side, 1);
+      if (target.y >= bounds.maxY) {
+        stage = 'bottom';
+        this._edgeClimbStage = stage;
+        graphType = this._edgeGraphForStage(stage, side, this._edgeClimbBottomDirection);
+      }
+    } else if (stage === 'bottom') {
+      const dir = this._edgeClimbBottomDirection >= 0 ? 1 : -1;
+      target = this._clampWindowTarget(x + dir * step, bounds.maxY, bounds);
+      graphType = this._edgeGraphForStage(stage, side, dir);
+      const done = (dir > 0 && target.x >= bounds.maxX) || (dir < 0 && target.x <= 0);
+      if (done) {
+        await this._moveWindowTowardEdgeTarget(pos, target).catch(() => {});
+        this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+        return false;
+      }
+    } else {
+      this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+      return false;
+    }
+
+    await this._playEdgeClimbGraph(graphType, side);
+    await this._moveWindowTowardEdgeTarget(pos, target).catch(() => {});
+    return true;
+  }
+
+  async _playAmbientGraphWithFallback(candidates, mode = this.mode, options = {}) {
+    for (const graph of candidates) {
+      if (!graph) continue;
+      const loaded = await this.playAnimation(graph, mode, null, { ambient: true, ...options });
+      if (loaded) return graph;
+    }
+    return null;
+  }
+
+  _isWalkPlayerHealthy(graphType) {
+    if (!graphType || this.graphType !== graphType) return false;
+    if (!this.player.isPlaying || !this.player.currentImage) return false;
+    return this.player.currentPhase === 'a_start' || this.player.currentPhase === 'b_loop';
+  }
+
+  _hasPlayableFrames(graphType, mode = this.mode || 'normal') {
+    const resolved = this._resolveGraphType(graphType);
+    const fromManifest = this._manifest?.animations?.[resolved];
+    const manifestPhases = fromManifest?.[mode] || fromManifest?.normal || null;
+    if (manifestPhases) {
+      return ['a_start', 'b_loop', 'c_end', 'b_loop_front']
+        .some((phase) => Array.isArray(manifestPhases[phase]) && manifestPhases[phase].length > 1);
+    }
+
+    const phases = phasesCache.get(`${resolved}|${mode}`) || phasesCache.get(`${resolved}|normal`) || null;
+    if (!phases) return false;
+    return ['a_start', 'b_loop', 'c_end', 'b_loop_front']
+      .some((phase) => Array.isArray(phases[phase]) && phases[phase].length > 1);
+  }
+
+  _pickMusicGraph(mode = 'happy') {
+    const candidates = ['say', 'idle_happy_like520', 'playone', 'stateone', 'statetwo', 'idle', 'switch', 'think'];
+    const found = candidates.find((graph) => this._hasAnimationGraph(graph) && this._hasPlayableFrames(graph, mode));
+    return found ? this._resolveGraphType(found) : null;
   }
 
   async _musicTick() {
-    if (!this._hasAnimationGraph('music')) return;
+    const musicGraph = this._pickMusicGraph('happy');
+    if (!musicGraph) return;
     const now = performance.now();
     const canAct = this._canAmbientAct({ allowMusic: true });
 
@@ -1719,24 +2421,34 @@ class DesktopPetApp {
     if (this._musicActive || !this._canAmbientAct({ allowMusic: true })) return;
     this._musicActive = true;
     this._musicStrong = !!strong;
-    this._walkGraphType = 'music';
+    const musicGraph = this._pickMusicGraph('happy');
+    if (!musicGraph) {
+      this._musicActive = false;
+      this._musicStrong = false;
+      return;
+    }
+    this._musicGraphType = musicGraph;
+    this._walkGraphType = musicGraph;
     const label = strong ? '强节奏' : '音乐';
     this._recordInteraction('music', { label, mood: 'happy', duration: 0, suppressFeedback: true });
     this._speakSceneProactive({ type: 'music', label, strong }).catch(() => {});
-    await this.playAnimation('music', 'happy', null, { ambient: true });
-    if (this.graphType !== 'music') {
+    await this.playAnimation(musicGraph, 'happy', null, { ambient: true, startPhase: 'b_loop', requirePlayableFrames: true });
+    if (this.graphType !== musicGraph) {
       this._musicActive = false;
+      this._musicGraphType = null;
     }
   }
 
   _stopMusicDance(options = {}) {
     if (!this._musicActive) return;
     const shouldRestore = options.restore !== false;
+    const musicGraph = this._musicGraphType;
     this._musicActive = false;
+    this._musicGraphType = null;
     this._musicStrong = false;
     this._musicAboveSince = 0;
     this._musicAverage = 0;
-    if (shouldRestore && this.graphType === 'music') {
+    if (shouldRestore && this.graphType === musicGraph) {
       this.playAnimation('default', this.mode || 'normal', null, { ambient: true });
     }
   }
@@ -1761,7 +2473,8 @@ class DesktopPetApp {
 
     try {
       await this._speakProactive({ type: 'mischief', action }, {
-        fallback: this._fallbackProactiveSpeech({ type: 'mischief', action }),
+        fallbackWhenBlocked: false,
+        fallbackWhenUnavailable: false,
         minIntervalMs: 60000,
         typeMinIntervalMs: 120000,
       });
@@ -1840,16 +2553,18 @@ class DesktopPetApp {
     bubble.textContent = text;
     Object.assign(bubble.style, {
       position: 'fixed',
-      right: '8px',
-      top: '8px',
-      transform: 'translateY(0)',
+      left: '50%',
+      bottom: `${PET_BODY_VIEWPORT_SIZE + 4}px`,
+      transform: 'translate(-50%, 0)',
       background: 'rgba(0,0,0,0.78)',
       color: '#fff',
-      padding: '6px 10px',
-      borderRadius: '10px',
+      padding: '7px 10px',
+      borderRadius: '12px',
       fontSize: '12px',
       fontFamily: 'sans-serif',
-      maxWidth: '150px',
+      maxWidth: `${PET_BODY_VIEWPORT_SIZE - 24}px`,
+      maxHeight: `${PET_BUBBLE_MAX_HEIGHT}px`,
+      overflow: 'hidden',
       whiteSpace: 'pre-wrap',
       wordBreak: 'break-word',
       lineHeight: '1.45',
@@ -1863,7 +2578,7 @@ class DesktopPetApp {
     document.body.appendChild(bubble);
     requestAnimationFrame(() => {
       bubble.style.opacity = '1';
-      bubble.style.transform = 'translateY(-3px)';
+      bubble.style.transform = 'translate(-50%, -3px)';
     });
     if (duration > 0) {
       setTimeout(() => { this._dismissBubble(bubble); }, duration);
@@ -1874,7 +2589,7 @@ class DesktopPetApp {
     if (!bubble || !bubble.parentNode) return;
     if (this._currentBubble === bubble) this._currentBubble = null;
     bubble.style.opacity = '0';
-    bubble.style.transform = 'translateY(-10px)';
+    bubble.style.transform = 'translate(-50%, -10px)';
     setTimeout(() => bubble.remove(), 300);
   }
 
@@ -1898,21 +2613,30 @@ class DesktopPetApp {
   }
 
   _stopThinkingDots(finalSpeech = null) {
+    const hadThinking = !!this._thinkingTimer;
     if (this._thinkingTimer) {
       clearInterval(this._thinkingTimer);
       this._thinkingTimer = null;
     }
     if (finalSpeech) {
       this.showBubble(finalSpeech, Math.max(2800, finalSpeech.length * 90));
-      this._ttsSpeak(finalSpeech);
+      this._ttsSpeak(finalSpeech).catch(() => {});
+    } else if (hadThinking) {
+      this._clearBubble();
     }
   }
 
-  async _loadAnimation(graphType, mode) {
-    this.statusAnim.textContent = `Anim: loading ${graphType}/${mode}...`;
+  async _loadAnimation(graphType, mode, options = {}) {
+    const resolvedGraphType = this._resolveGraphType(graphType);
+    const phasesKey = `${resolvedGraphType}|${mode}`;
+    const loadSeq = ++this._animationLoadSeq;
 
-    // 获取动画帧列表
-    const phases = await invoke('get_animation_frames', { graphType, mode });
+    let phases = phasesCache.get(phasesKey);
+    if (!phases) {
+      this.statusAnim.textContent = `Anim: loading ${resolvedGraphType}/${mode}...`;
+      phases = await invoke('get_animation_frames', { graphType: resolvedGraphType, mode });
+      phasesCache.set(phasesKey, phases);
+    }
 
     // 收集所有帧路径 (含前景叠加层)
     const allPaths = [];
@@ -1923,34 +2647,87 @@ class DesktopPetApp {
       }
     }
 
-    this.statusAnim.textContent = `Anim: preloading ${allPaths.length} frames...`;
+    if (allPaths.length === 0) {
+      throw new Error(`动画 ${resolvedGraphType}/${mode} 没有可播放帧`);
+    }
+    if (options.requirePlayableFrames && !['a_start', 'b_loop', 'c_end', 'b_loop_front'].some((phase) => (phases[phase] || []).length > 1)) {
+      throw new Error(`动画 ${resolvedGraphType}/${mode} 不是可循环播放动作`);
+    }
 
-    // 批量预加载
-    await preloadFrames(allPaths);
+    // 有未缓存的帧才执行批量预加载
+    if (allPaths.some(p => !frameCache.has(p))) {
+      this.statusAnim.textContent = `Anim: preloading ${allPaths.length} frames...`;
+      await preloadFrames(allPaths);
+    }
+
+    if (loadSeq !== this._animationLoadSeq && !options.force) return false;
 
     // 设置播放器
     this.player.setPhases(phases);
     this.player.play(() => {
-      // 播放完成回调 (非循环动画)
-      console.log(`动画 ${graphType}/${mode} 播放完成`);
+      console.log(`动画 ${resolvedGraphType}/${mode} 播放完成`);
     });
 
-    this.statusAnim.textContent = `Anim: ${graphType}/${mode} ✓ (${allPaths.length}f)`;
-    this.graphType = graphType;
+    this.statusAnim.textContent = `Anim: ${resolvedGraphType}/${mode} ✓ (${allPaths.length}f)`;
+    this.graphType = resolvedGraphType;
     this.mode = mode;
+    return true;
+  }
+
+  // 后台预热常用动画，避免首次触发时的 IPC 延迟
+  async _warmupCommon() {
+    const warmupList = [
+      ['touch_head', 'normal'], ['touch_head', 'happy'],
+      ['touch_body', 'normal'],
+      ['pinch', 'normal'],
+      ['raise', 'normal'], ['raise', 'happy'], ['raise', 'poorCondition'], ['raise', 'ill'],
+      ['eat', 'normal'], ['drink', 'normal'],
+      ['sleep', 'normal'],
+      ['say', 'normal'],
+      ['think', 'normal'],
+      ['idle', 'normal'],
+      ['switch', 'normal'],
+      ['work', 'normal'],
+    ];
+    for (const [gt, mode] of warmupList) {
+      // 等待当前动画切换完成，避免抢占 IPC
+      while (this._animatingLock) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+      try {
+        const resolvedGt = this._resolveGraphType(gt);
+        const phasesKey = `${resolvedGt}|${mode}`;
+        if (!phasesCache.has(phasesKey) && this._isGraphAvailable(resolvedGt)) {
+          const phases = await invoke('get_animation_frames', { graphType: resolvedGt, mode });
+          phasesCache.set(phasesKey, phases);
+          const allPaths = [];
+          for (const phase of ['a_start', 'b_loop', 'c_end', 'b_loop_front']) {
+            for (const f of (phases[phase] || [])) allPaths.push(f.file);
+          }
+          await preloadFrames(allPaths);
+        }
+      } catch (e) {
+        console.warn(`[warmup] 预加载 ${gt}/${mode} 失败:`, e);
+      }
+      // 小延迟，避免阻塞渲染帧
+      await new Promise(r => setTimeout(r, 120));
+    }
+    console.log('[warmup] 常用动画预加载完成');
   }
 
   // 切换动画
   // options: { autoEndLoops?: number, ambient?: boolean } - ambient 不占用手动交互锁
   async playAnimation(graphType, mode, onComplete, options = {}) {
-    if (graphType === this.graphType && mode === this.mode && !options.foodImage && !options.autoEndLoops) {
+    const resolvedGraphType = this._resolveGraphType(graphType);
+    if (!options.force && !options.startPhase && resolvedGraphType === this.graphType && mode === this.mode && this.player.isPlaying && !options.foodImage && !options.autoEndLoops) {
       if (onComplete) onComplete();
-      return;
+      return true;
     }
 
     // 防止并发: 如果正在切换动画则跳过 (force 模式跳过此检查)
-    if (this._animatingLock && !options.force) return;
+    if (this._animatingLock && !options.force) return false;
     this._animatingLock = true;
+    this.player.onLoopCycle = null;
     const isAmbient = !!options.ambient;
 
     if (!isAmbient) {
@@ -1963,18 +2740,27 @@ class DesktopPetApp {
 
     // 锁定手动动画，防止闲置行为覆盖
     this._manualAnimLock = true;
-    const lockDuration = (options.autoEndLoops || 0) > 0 ? (options.autoEndLoops * 1000 + 2000) : 4000;
+    const requestedLockDuration = Number(options.lockDurationMs);
+    const lockDuration = Number.isFinite(requestedLockDuration) && requestedLockDuration > 0
+      ? requestedLockDuration
+      : ((options.autoEndLoops || 0) > 0 ? (options.autoEndLoops * 1000 + 2000) : 4000);
     this._manualAnimTimer = setTimeout(() => {
       this._manualAnimLock = false;
       this._manualAnimTimer = null;
     }, lockDuration);
     }
 
+    let animationLoaded = false;
     try {
-      await this._loadAnimation(graphType, mode);
+      animationLoaded = await this._loadAnimation(graphType, mode, {
+        force: !!options.force,
+        requirePlayableFrames: !!options.requirePlayableFrames,
+      });
       // startPhase: 'b_loop' — 跳过 a_start 直接进入循环阶段 (对标 VPet 拖拽行为)
-      if (options.startPhase === 'b_loop') {
+      if (animationLoaded && options.startPhase === 'b_loop') {
         this.player.goToLoop();
+      } else if (animationLoaded && options.startPhase === 'c_end') {
+        this.player.goToEnd();
       }
     } catch (e) {
       console.warn('加载动画失败:', e);
@@ -1996,26 +2782,21 @@ class DesktopPetApp {
       this._feedingGraph = null;
     }
 
-    // 自动触发 c_end (用于 pinch 等有结束动画的动作)
+    // 自动触发 c_end / 停在循环边界 (用于 pinch、touch、单次吃喝动作)
     if (options.autoEndLoops && options.autoEndLoops > 0) {
-      const loops = options.autoEndLoops;
+      const loops = Math.max(1, Number(options.autoEndLoops) || 1);
       let loopCount = 0;
-      const origUpdate = this.player.update.bind(this.player);
-      // 在 b_loop 阶段计数，达到次数后触发 c_end
-      const checkInterval = setInterval(() => {
-        if (this.player.currentPhase === 'b_loop' && this.player.isPlaying) {
-          // 通过监听 phase 切换来计数
-          loopCount++;
-          if (loopCount >= loops) {
-            clearInterval(checkInterval);
-            this.player.triggerEnd(() => {
-              this._manualAnimLock = false;
-              if (this._manualAnimTimer) { clearTimeout(this._manualAnimTimer); this._manualAnimTimer = null; }
-              if (onComplete) onComplete();
-            });
-          }
-        }
-      }, 800); // pinch b_loop 约 750ms, 检查间隔略大于一个循环
+      this.player.onLoopCycle = () => {
+        if (!this.player.isPlaying || this.player.currentPhase !== 'b_loop') return;
+        loopCount++;
+        if (loopCount < loops) return;
+        this.player.onLoopCycle = null;
+        this.player.triggerEnd(() => {
+          this._manualAnimLock = false;
+          if (this._manualAnimTimer) { clearTimeout(this._manualAnimTimer); this._manualAnimTimer = null; }
+          if (onComplete) onComplete();
+        });
+      };
     }
 
     if (onComplete && !options.autoEndLoops) {
@@ -2029,6 +2810,7 @@ class DesktopPetApp {
     }
 
     this._animatingLock = false;
+    return animationLoaded;
   }
 
   // ── 交互事件绑定 ──
@@ -2094,6 +2876,9 @@ class DesktopPetApp {
         const dScreenX = e.screenX - this._dragStartX;
         const dScreenY = e.screenY - this._dragStartY;
         this._dragLastDx = dScreenX;
+        this._dragLastDy = dScreenY;
+        this._dragTotalDx += dScreenX;
+        this._dragTotalDy += dScreenY;
         this._dragStartX = e.screenX;
         this._dragStartY = e.screenY;
         this._walkPauseUntil = performance.now() + 1800;
@@ -2143,6 +2928,117 @@ class DesktopPetApp {
     }
   }
 
+  _selectLandingAction({ wasDragging, wasHolding, mood }) {
+    const totalDx = Number(this._dragTotalDx || 0);
+    const totalDy = Number(this._dragTotalDy || 0);
+    const lastDx = Number(this._dragLastDx || 0);
+    const lastDy = Number(this._dragLastDy || 0);
+    const distance = Math.hypot(totalDx, totalDy);
+    const releaseSpeed = Math.hypot(lastDx, lastDy);
+    const direction = (Math.abs(totalDx) >= 8 ? totalDx : lastDx) < 0 ? 'left' : 'right';
+    const fallGraph = `move.fall.${direction}`;
+    const canUseFall = this._hasAnimationGraph(fallGraph);
+
+    const lightRelease = !wasDragging || (distance < 28 && releaseSpeed < 10);
+    if (lightRelease) {
+      return {
+        kind: 'light',
+        graph: 'raise',
+        startPhase: 'c_end',
+        message: '轻轻落地喵~',
+        pauseMs: 2400,
+      };
+    }
+
+    const heavyRelease = canUseFall && (distance > 180 || releaseSpeed > 42 || totalDy > 95 || mood === 'ill');
+    if (heavyRelease) {
+      const slideDx = (direction === 'left' ? -1 : 1) * Math.max(26, Math.min(72, 22 + releaseSpeed * 1.1));
+      const slideDy = Math.max(8, Math.min(24, Math.abs(totalDy) * 0.18 + releaseSpeed * 0.2));
+      return {
+        kind: 'fall',
+        graph: fallGraph,
+        startPhase: 'a_start',
+        message: '哎呀，摔了一下喵...',
+        pauseMs: 4200,
+        slideDx: Math.round(slideDx),
+        slideDy: Math.round(slideDy),
+      };
+    }
+
+    return {
+      kind: 'safe',
+      graph: 'raise',
+      startPhase: 'c_end',
+      message: '安全落地喵~',
+      pauseMs: 2600,
+    };
+  }
+
+  _finishLandingAction(mood) {
+    this._clearManualAnimationLock();
+    this._animatingLock = false;
+    if (!this._wasWorking || !this._currentWorkContext?.graph) this._returnToIdle(mood);
+    else this._scheduleWorkResumeAfterInterrupt(mood);
+  }
+
+  _animateFallLandingSlide(landing) {
+    const dx = Number(landing?.slideDx || 0);
+    const dy = Number(landing?.slideDy || 0);
+    if (!Number.isFinite(dx) || !Number.isFinite(dy) || (Math.abs(dx) < 1 && Math.abs(dy) < 1)) return;
+
+    const steps = 9;
+    const totalMs = 760;
+    let lastX = 0;
+    let lastY = 0;
+    for (let i = 1; i <= steps; i++) {
+      setTimeout(() => {
+        const t = i / steps;
+        const ease = 1 - Math.pow(1 - t, 2.2);
+        const targetX = Math.round(dx * ease);
+        const targetY = Math.round(dy * Math.sin(t * Math.PI * 0.5));
+        const moveX = targetX - lastX;
+        const moveY = targetY - lastY;
+        lastX = targetX;
+        lastY = targetY;
+        if (moveX || moveY) invoke('move_window_by', { dx: moveX, dy: moveY }).catch(() => {});
+      }, Math.round((totalMs / steps) * i));
+    }
+
+    setTimeout(() => {
+      const reboundX = Math.round(-dx * 0.22);
+      const reboundY = Math.round(-dy * 0.18);
+      if (reboundX || reboundY) invoke('move_window_by', { dx: reboundX, dy: reboundY }).catch(() => {});
+    }, totalMs + 160);
+  }
+
+  async _playLandingAction(landing, mood) {
+    const finish = () => this._finishLandingAction(mood);
+    if (landing.kind === 'light' || landing.kind === 'safe') {
+      const loaded = await this.playAnimation(landing.graph, mood, finish, {
+        force: true,
+        startPhase: 'c_end',
+        lockDurationMs: landing.pauseMs,
+      });
+      if (!loaded) finish();
+      return;
+    }
+
+    this._animateFallLandingSlide(landing);
+    const loaded = await this.playAnimation(landing.graph, mood, finish, {
+      force: true,
+      autoEndLoops: 1,
+      lockDurationMs: landing.pauseMs,
+    });
+    if (!loaded) {
+      const fallbackLoaded = await this.playAnimation('raise', mood, finish, {
+        force: true,
+        startPhase: 'c_end',
+        lockDurationMs: 2400,
+      });
+      if (!fallbackLoaded) finish();
+    }
+  }
+
   _finishDrag(e) {
     const wasDragging = this._dragging;
     const wasHolding = this._raiseHoldActive;
@@ -2161,31 +3057,16 @@ class DesktopPetApp {
     if (this._dragReleaseTimer) { clearTimeout(this._dragReleaseTimer); this._dragReleaseTimer = null; }
 
     const mood = this.mode || 'normal';
-
-    // VPet 落地逻辑: 根据拖拽速度计算摔跤概率
-    const speed = Math.abs(this._dragLastDx || 0);
-    const moodPenalty = mood === 'ill' ? 0.25 : mood === 'poorCondition' ? 0.16 : 0;
-    const motionPenalty = Math.min(0.35, speed / 90);
-    const fallChance = Math.min(0.72, Math.max(0.08, 0.12 + moodPenalty + motionPenalty));
-    const isFall = Math.random() < fallChance;
-
-    const msgs = isFall
-      ? ['哎呀，摔了一下喵...', '落地失败喵...', '主人要轻一点喵~']
-      : ['安全落地喵~', '站稳啦！', '轻轻落地喵~'];
-    const releaseMsg = msgs[Math.floor(Math.random() * msgs.length)];
+    const landing = this._selectLandingAction({ wasDragging, wasHolding, mood });
 
     this._manualAnimLock = true;
-    this._walkPauseUntil = performance.now() + 3500;
-    this.showBubble(releaseMsg, 2200);
+    this._walkPauseUntil = performance.now() + landing.pauseMs;
+    this.showBubble(landing.message, 2200);
     this._dragReleaseTimer = null;
 
-    // 对标 VPet: 播放 raise c_end (落地收尾动画), 结束后回到 idle
-    // raise 已拆分为 a_start/b_loop/c_end 三段, triggerEnd 触发 c_end 落地帧
-    this.player.triggerEnd(() => {
-      this._manualAnimLock = false;
-      if (this._manualAnimTimer) { clearTimeout(this._manualAnimTimer); this._manualAnimTimer = null; }
-      if (!this._wasWorking || !this._currentWorkContext?.graph) this._returnToIdle(mood);
-      else this._scheduleWorkResumeAfterInterrupt(mood);
+    this._playLandingAction(landing, mood).catch((err) => {
+      console.warn('落地动作播放失败:', err);
+      this._finishLandingAction(mood);
     });
     if (e) e.preventDefault();
     return true;
@@ -2386,12 +3267,9 @@ class DesktopPetApp {
       const speechType = graph === 'drink' ? 'drink' : 'feed';
       const label = result.foodName || normalizedName;
       this._speakSceneProactive({ type: speechType, label, foodName: label }).catch(() => {});
-      // 强制清除并发锁, 确保动画不被行走tick阻断
+      // 在当前动作完整循环结束后再进入开心/待机，避免喝水第二圈中途硬切
       this._animatingLock = false;
-      await this.playAnimation(graph, result.mood || 'normal', null, { foodImage: result.foodImage });
-      // 吃/喝完后先播一次开心表情，再回待机
-      setTimeout(() => {
-        if (this.graphType !== graph) return;
+      await this.playAnimation(graph, result.mood || 'normal', () => {
         const happyGraph = this._pickAmbientGraph(['touch_head', 'switch', 'think']);
         this._animatingLock = false;
         if (happyGraph && this._hasAnimationGraph(happyGraph)) {
@@ -2401,7 +3279,7 @@ class DesktopPetApp {
         } else {
           this._returnToIdle(result.mood || this.mode);
         }
-      }, 3800);
+      }, { foodImage: result.foodImage, autoEndLoops: 1 });
       if (result.message) console.log('[Pet]:', result.message);
     } catch(e) { this.showBubble(type === 'drink' ? '喝不了...' : '吃不了...', 2000); }
   }
@@ -2501,13 +3379,16 @@ class DesktopPetApp {
     if (!img) return;
     if (this.player.currentImage) this._lastRenderImage = this.player.currentImage;
 
-    // 将帧绘制到 Canvas 中心
-    // VPet 帧通常 500x500 或更大，缩放到 Canvas 大小
-    const scale = Math.min(W / img.naturalWidth, H / img.naturalHeight);
+    // 将宠物本体固定绘制在窗口下方，顶部透明区留给聊天气泡
+    const bodyViewportH = Math.min(PET_BODY_VIEWPORT_SIZE, H);
+    const bodyViewportW = Math.min(PET_BODY_VIEWPORT_SIZE, W);
+    const bodyLeft = (W - bodyViewportW) / 2;
+    const bodyTop = H - bodyViewportH;
+    const scale = Math.min(bodyViewportW / img.naturalWidth, bodyViewportH / img.naturalHeight);
     const dw = img.naturalWidth * scale;
     const dh = img.naturalHeight * scale;
-    const dx = (W - dw) / 2;
-    const dy = (H - dh) / 2;
+    const dx = bodyLeft + (bodyViewportW - dw) / 2;
+    const dy = bodyTop + (bodyViewportH - dh) / 2;
 
     // 保存渲染参数供坐标转换使用
     this._renderScale = scale;
@@ -2517,19 +3398,26 @@ class DesktopPetApp {
     ctx.drawImage(img, dx, dy, dw, dh);
 
     // VPet 食物中间层 (FoodAnimation): 绘制在后层身体之上、前层爪子之下
-    // 关键帧坐标基于 VPet 500x500 食物网格, 按画布尺寸等比映射
+    // 关键帧坐标基于 VPet 500x500 食物网格, 按宠物本体区域等比映射
     const foodKf = this.player.currentFoodKeyframe;
     const foodImg = this.player.foodImage;
     if (foodKf && foodKf.visible && foodImg) {
-      const s = W / 500;
-      const fw = foodKf.width * s;
-      const fh = foodKf.width * s;
-      const cx = foodKf.x * s + fw / 2;  // 关键帧 x/y 为左上角偏移
-      const cy = foodKf.y * s + fh / 2;
+      const foodScale = Math.min(
+        bodyViewportW / FOOD_ANIMATION_LOGICAL_SIZE,
+        bodyViewportH / FOOD_ANIMATION_LOGICAL_SIZE,
+      );
+      const foodAreaW = FOOD_ANIMATION_LOGICAL_SIZE * foodScale;
+      const foodAreaH = FOOD_ANIMATION_LOGICAL_SIZE * foodScale;
+      const foodDx = bodyLeft + (bodyViewportW - foodAreaW) / 2;
+      const foodDy = bodyTop + (bodyViewportH - foodAreaH) / 2;
+      const fw = foodKf.width * foodScale;
+      const fh = foodKf.width * foodScale;
+      const cx = foodDx + foodKf.x * foodScale + fw / 2;
+      const cy = foodDy + foodKf.y * foodScale + fh / 2;
       ctx.save();
-      ctx.globalAlpha = foodKf.opacity;
+      ctx.globalAlpha = Number.isFinite(foodKf.opacity) ? foodKf.opacity : 1;
       ctx.translate(cx, cy);
-      ctx.rotate((foodKf.rotate * Math.PI) / 180);  // 绕食物中心旋转
+      ctx.rotate((foodKf.rotate * Math.PI) / 180);
       ctx.drawImage(foodImg, -fw / 2, -fh / 2, fw, fh);
       ctx.restore();
     }
@@ -2537,14 +3425,15 @@ class DesktopPetApp {
     // VPet 前景叠加层 (front_lay): 绘制在主帧上方
     const frontImg = this.player.frontImage;
     if (frontImg) {
-      const fs = Math.min(W / frontImg.naturalWidth, H / frontImg.naturalHeight);
+      const fs = Math.min(bodyViewportW / frontImg.naturalWidth, bodyViewportH / frontImg.naturalHeight);
       const fdw = frontImg.naturalWidth * fs;
       const fdh = frontImg.naturalHeight * fs;
-      const fdx = (W - fdw) / 2;
-      const fdy = (H - fdh) / 2;
+      const fdx = bodyLeft + (bodyViewportW - fdw) / 2;
+      const fdy = bodyTop + (bodyViewportH - fdh) / 2;
       ctx.drawImage(frontImg, fdx, fdy, fdw, fdh);
     }
 
+    this._updateBubblePlacement();
   }
 
   _drawEllipse(ctx, lx, ly, lrx, lry, dx, dy, scale) {
@@ -2562,19 +3451,103 @@ class DesktopPetApp {
   // ── 自主行走 ──
 
   async _walkTick() {
-    if (this._dragging || this._manualSleepMode || this._manualAnimLock) return;
-    if (performance.now() < this._walkPauseUntil) return;
-    if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;  // 工具栏/聊天/设置打开时暂停行走
-    if (performance.now() < this._chatActiveUntil) return;
+    if (this._walkTickBusy) return;
+    if (this._dragging || this._manualSleepMode || this._manualAnimLock) {
+      if (this._edgeClimbActive) this._clearEdgeClimbState({ pauseMs: 900 });
+      return;
+    }
+    if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) {
+      if (this._edgeClimbActive) this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+      return;
+    }
+    if (performance.now() < this._chatActiveUntil) {
+      if (this._edgeClimbActive) this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+      return;
+    }
     // 聊天进行中不移动
-    if (this.chatUI && this.chatUI._isSending) return;
+    if (this.chatUI && this.chatUI._isSending) {
+      if (this._edgeClimbActive) this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+      return;
+    }
+
+    const now = performance.now();
+    if (this._edgeClimbActive) {
+      this._walkTickBusy = true;
+      try {
+        const [pos, screen] = await Promise.all([
+          invoke('get_window_position', {}),
+          invoke('get_screen_info', {}),
+        ]);
+        if (this._dragging || this._manualSleepMode || this._manualAnimLock) {
+          this._clearEdgeClimbState({ pauseMs: 900 });
+          return;
+        }
+        if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) {
+          this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+          return;
+        }
+        if (performance.now() < this._chatActiveUntil) {
+          this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+          return;
+        }
+        if (this.chatUI && this.chatUI._isSending) {
+          this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+          return;
+        }
+        await this._advanceEdgeClimb(pos, screen);
+      } catch (_) {
+        this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+      } finally {
+        this._walkTickBusy = false;
+      }
+      return;
+    }
+    if (now < this._edgeMoveUntil) {
+      this._walkTickBusy = true;
+      try {
+        if (this._edgeMoveGraphType && this.graphType !== this._edgeMoveGraphType) {
+          await this._playAmbientGraphWithFallback([this._edgeMoveGraphType, 'default'], this.mode, { force: true });
+        }
+        const dy = Number.isFinite(this._edgeMoveDy) ? Math.round(this._edgeMoveDy) : 0;
+        if (dy !== 0) await invoke('move_window_by', { dx: 0, dy }).catch(() => {});
+      } finally {
+        this._walkTickBusy = false;
+      }
+      return;
+    }
+    if (this._edgeMoveUntil > 0) {
+      this._edgeMoveUntil = 0;
+      this._edgeMoveDy = 0;
+      this._edgeMoveGraphType = null;
+      this._walkRunGraphType = null;
+      this._walkEndPending = false;
+      this._walkGraphType = 'default';
+      this._walkPauseUntil = now + 900;
+      this.playAnimation('default', this.mode || 'normal', null, { ambient: true }).catch(() => {});
+      return;
+    }
+    if (now < this._walkPauseUntil) return;
+
+    const dtSeconds = this._lastWalkTickAt
+      ? Math.max(0.08, Math.min(0.25, (now - this._lastWalkTickAt) / 1000))
+      : 0.12;
+    this._lastWalkTickAt = now;
+    this._walkTickBusy = true;
+
     try {
       const [pos, screen] = await Promise.all([
         invoke('get_window_position', {}),
         invoke('get_screen_info', {}),
       ]);
+
+      if (this._dragging || this._manualSleepMode || this._manualAnimLock) return;
+      if (performance.now() < this._walkPauseUntil) return;
+      if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;
+      if (performance.now() < this._chatActiveUntil) return;
+      if (this.chatUI && this.chatUI._isSending) return;
+
       const result = await invoke('walk_tick', {
-        dtSeconds: 0.12,
+        dtSeconds,
         windowX: pos.x,
         windowY: pos.y,
         windowW: pos.width,
@@ -2583,113 +3556,143 @@ class DesktopPetApp {
         screenH: Math.round(screen.workAreaHeight),
       });
 
+      if (this._dragging || this._manualSleepMode || this._manualAnimLock) return;
+      if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;
+
       if (result.dx !== 0 || result.dy !== 0) {
         await invoke('move_window_by', { dx: result.dx, dy: result.dy });
       }
 
       if (result.edgeHit) {
-        this._walkPauseUntil = performance.now() + 900;
+        const nextPos = {
+          ...pos,
+          x: Math.round(Number(pos.x) || 0) + Math.round(Number(result.dx) || 0),
+          y: Math.round(Number(pos.y) || 0) + Math.round(Number(result.dy) || 0),
+        };
+        await this._startEdgeClimb(result, nextPos, screen);
+        return;
       }
 
       const nextGraphType = this._resolveWalkGraphType(result);
+      const isWalking = !!result.walking && (result.dx !== 0 || result.dy !== 0);
+      const isWalkAnim = !!(nextGraphType && nextGraphType.startsWith('move.walk.'));
+      const walkCandidates = isWalkAnim ? this._walkGraphCandidates(nextGraphType, result) : [];
 
       // 记录朝向；行走图片直接使用 VPet 的 left/right 资源，不再靠画布翻转伪造方向
       this._facingRight = result.facingRight !== false;
       this.canvas.style.transform = '';
 
-      // 自主巡游/闲置切换属于环境动作，不占用手动动画锁
-      // 走路动画只在实际移动时触发，避免 Idle→Walking 切换首帧出现"有动画无移动"的问题
-      if (nextGraphType && nextGraphType !== this._walkGraphType) {
-        const isWalkAnim = nextGraphType.startsWith('move.walk.');
-        const hasMoved = result.dx !== 0 || result.dy !== 0;
-        if (!isWalkAnim || hasMoved) {
-          this._walkGraphType = nextGraphType;
-          if (!this._manualAnimLock) {
-            this.playAnimation(nextGraphType, this.mode, null, { ambient: true });
-          }
+      if (isWalking && walkCandidates.length) {
+        this._walkEndPending = false;
+        const pendingFresh = walkCandidates.includes(this._walkPendingGraphType) && performance.now() - this._walkPendingStartedAt < 900;
+        const sameRunningWalk = walkCandidates.includes(this._walkRunGraphType) || pendingFresh;
+        if (sameRunningWalk && this._walkRunGraphType && this._isWalkPlayerHealthy(this._walkRunGraphType)) return;
+
+        const preferredWalkGraph = walkCandidates[0];
+        this._walkPendingGraphType = preferredWalkGraph;
+        this._walkPendingStartedAt = performance.now();
+        this._playAmbientGraphWithFallback(walkCandidates, this.mode)
+          .then((loadedWalkGraph) => {
+            if (!loadedWalkGraph || this._walkPendingGraphType !== preferredWalkGraph) return;
+            if (this._dragging || this._manualSleepMode || this._manualAnimLock) return;
+            if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;
+            this._walkGraphType = loadedWalkGraph;
+            this._walkRunGraphType = loadedWalkGraph;
+          })
+          .catch(() => {})
+          .finally(() => {
+            if (this._walkPendingGraphType === preferredWalkGraph) this._walkPendingGraphType = null;
+          });
+        return;
+      }
+
+      if (this._walkRunGraphType && !isWalking) {
+        const endingGraph = this._walkRunGraphType;
+        this._walkRunGraphType = null;
+        this._walkPendingGraphType = null;
+        if (!this._walkEndPending && this.graphType === endingGraph && this.player.currentPhase === 'b_loop') {
+          this._walkEndPending = true;
+          this._walkPauseUntil = performance.now() + 650;
+          this.player.triggerEnd(() => {
+            this._walkEndPending = false;
+            this._walkGraphType = 'default';
+            const idleGraph = nextGraphType || 'default';
+            this.playAnimation(idleGraph, this.mode, null, { ambient: true });
+          });
+          return;
         }
       }
+
+      // 自主巡游/闲置切换属于环境动作，不占用手动动画锁
+      if (nextGraphType && nextGraphType !== this._walkGraphType && nextGraphType !== this._walkPendingGraphType) {
+        this._walkPendingGraphType = nextGraphType;
+        this._walkPendingStartedAt = performance.now();
+        this.playAnimation(nextGraphType, this.mode, null, { ambient: true })
+          .then((loaded) => {
+            if (!loaded || this._walkPendingGraphType !== nextGraphType) return;
+            if (this._dragging || this._manualSleepMode || this._manualAnimLock) return;
+            if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;
+            this._walkGraphType = nextGraphType;
+          })
+          .catch(() => {})
+          .finally(() => {
+            if (this._walkPendingGraphType === nextGraphType) this._walkPendingGraphType = null;
+          });
+      }
     } catch (e) { /* 静默 */ }
+    finally {
+      this._walkTickBusy = false;
+    }
   }
 
   // ── 点击穿透 ──
   // 轮询检测鼠标是否在宠物精灵非透明像素上，动态切换窗口点击穿透
 
   async _checkClickthrough() {
+    if (this._clickthroughCheckBusy) return;
+
     const panelActive = !!(this.chatUI && this.chatUI.isVisible);
     if (this._dragging || this._toolbarActive || this._auxWindowActive || panelActive) {
-      if (this._clickthroughEnabled) {
-        this._clickthroughEnabled = false;
-        invoke('set_clickthrough', { enabled: false }).catch(() => {});
-      }
+      this._setClickthrough(false);
       return;
     }
 
+    this._clickthroughCheckBusy = true;
+    this._clickthroughLastCheckAt = performance.now();
+
     try {
-      const [pos, cursorPos] = await Promise.all([
+      const [pos, screenCursorPos, windowCursorPos] = await Promise.all([
         invoke('get_window_position', {}),
-        window.PetRuntime.cursorPosition(null),
+        invoke('get_cursor_position', {}).catch(() => null),
+        window.PetRuntime.cursorPosition(null).catch(() => null),
       ]);
-      if (!cursorPos || !pos) return;
 
-      const inWindow =
-        cursorPos.x >= pos.x && cursorPos.x <= pos.x + pos.width &&
-        cursorPos.y >= pos.y && cursorPos.y <= pos.y + pos.height;
-
-      if (!inWindow) {
-        if (!this._clickthroughEnabled) {
-          this._clickthroughEnabled = true;
-          invoke('set_clickthrough', { enabled: true }).catch(() => {});
-        }
+      const stillPanelActive = !!(this.chatUI && this.chatUI.isVisible);
+      if (this._dragging || this._toolbarActive || this._auxWindowActive || stillPanelActive) {
+        this._setClickthrough(false);
         return;
       }
 
-      const rect = this.canvas.getBoundingClientRect();
-      const viewportWidth = Math.max(1, window.innerWidth || rect.width || this.canvas.width);
-      const viewportHeight = Math.max(1, window.innerHeight || rect.height || this.canvas.height);
-      const physicalToCssX = viewportWidth / Math.max(1, pos.width);
-      const physicalToCssY = viewportHeight / Math.max(1, pos.height);
-      const clientX = (cursorPos.x - pos.x) * physicalToCssX;
-      const clientY = (cursorPos.y - pos.y) * physicalToCssY;
-      const localX = clientX - rect.left;
-      const localY = clientY - rect.top;
-      const canvasX = localX * (this.canvas.width / Math.max(1, rect.width));
-      const canvasY = localY * (this.canvas.height / Math.max(1, rect.height));
-
-      if (canvasX < 0 || canvasY < 0 || canvasX >= this.canvas.width || canvasY >= this.canvas.height) {
-        if (!this._clickthroughEnabled) {
-          this._clickthroughEnabled = true;
-          invoke('set_clickthrough', { enabled: true }).catch(() => {});
-        }
+      const client = this._cursorClientPoint(pos, screenCursorPos) || this._cursorClientPoint(pos, windowCursorPos);
+      if (!client) {
+        this._setClickthrough(true);
         return;
       }
 
-      let hasPixel = false;
-      try {
-        const pixelX = Math.max(0, Math.min(this.canvas.width - 1, Math.floor(canvasX)));
-        const pixelY = Math.max(0, Math.min(this.canvas.height - 1, Math.floor(canvasY)));
-        const pixelData = this.ctx.getImageData(pixelX, pixelY, 1, 1);
-        hasPixel = pixelData && pixelData.data[3] > 24;
-      } catch (_) {
-        hasPixel = false;
-      }
-
-      if (hasPixel) {
-        if (this._clickthroughEnabled) {
-          this._clickthroughEnabled = false;
-          invoke('set_clickthrough', { enabled: false }).catch(() => {});
-        }
-      } else if (!this._clickthroughEnabled) {
-        this._clickthroughEnabled = true;
-        invoke('set_clickthrough', { enabled: true }).catch(() => {});
-      }
+      const canvasPoint = this._canvasPointFromClient(client.x, client.y);
+      const hasPetPixel = !!(canvasPoint && this._hasOpaqueCanvasPixel(canvasPoint.x, canvasPoint.y));
+      const hasBubble = this._isBubbleClientHit(client.x, client.y);
+      this._setClickthrough(!(hasPetPixel || hasBubble));
     } catch (_) { /* 静默 */ }
+    finally {
+      this._clickthroughCheckBusy = false;
+    }
   }
 
   // ── SideHide 边缘检测 ──
 
   async _checkSideHide() {
-    if (this._dragging || this._manualSleepMode || this._manualAnimLock || this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;
+    if (this._edgeClimbActive || this._dragging || this._manualSleepMode || this._manualAnimLock || this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;
     if (performance.now() < this._chatActiveUntil) return;
     if (this.chatUI && this.chatUI._isSending) return;
     // 聊天/设置窗口打开时暂停侧边隐藏, 防止宠物被滑出屏幕
@@ -2891,7 +3894,7 @@ class ChatUI {
           this.app._markChatActive(Math.max(12000, final.length * 80));
           this.app._recordInteraction('chat', { label: 'reply', duration: 1200 });
           this.app.showBubble(final, Math.max(3000, final.length * 80));
-          this.app._ttsSpeak(final);
+          if (!this.app._isSpeechBusy()) this.app._ttsSpeak(final).catch(() => {});
         }
       });
 

@@ -52,6 +52,13 @@
     const listEl = document.getElementById('work-list');
     const titleEl = document.getElementById('panel-title');
 
+    function hideCurrentPanel() {
+      const current = window.PetRuntime.currentWindow();
+      if (current && typeof current.hide === 'function') {
+        current.hide().catch(() => {});
+      }
+    }
+
     async function init() {
       try {
         const kind = window.__workKind || 'work';
@@ -76,9 +83,9 @@
           stopBtn.className = 'stop-btn';
           const progress = Math.max(0, Math.min(100, Math.round(Number(currentWork?.progress || 0) * 100)));
           stopBtn.textContent = currentWork?.name ? `停止 ${currentWork.name} · ${progress}%` : '停止当前任务';
-          stopBtn.addEventListener('click', async () => {
-            await window.PetRuntime.emit('work-selected', { action: 'stop' });
-            setTimeout(() => window.PetRuntime.currentWindow().close(), 100);
+          stopBtn.addEventListener('click', () => {
+            hideCurrentPanel();
+            window.PetRuntime.emit('work-selected', { action: 'stop' }).catch(() => {});
           });
           listEl.appendChild(stopBtn);
         }
@@ -124,10 +131,10 @@
             btn.appendChild(nameLine);
             btn.appendChild(meta);
 
-            btn.addEventListener('click', async () => {
+            btn.addEventListener('click', () => {
               if (locked) { alert(`需要 Lv.${it.levelLimit}`); return; }
-              await window.PetRuntime.emit('work-selected', { action: 'start', type: it.type, graph: it.graph, name: it.name });
-              setTimeout(() => window.PetRuntime.currentWindow().close(), 100);
+              hideCurrentPanel();
+              window.PetRuntime.emit('work-selected', { action: 'start', type: it.type, graph: it.graph, name: it.name }).catch(() => {});
             });
 
             listEl.appendChild(btn);

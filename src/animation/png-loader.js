@@ -1,11 +1,11 @@
-// PngLoader - 从 VPet 资源目录加载 PNG 帧
+// PngLoader - 从本地 assets/vup 资源目录加载 PNG 帧
 // 使用 manifest 定位帧文件，通过 Electron/浏览器 fetch 加载为 ImageBitmap
 // 支持 LRU 缓存以避免 5000+ 帧同时驻留内存
 
 class PngLoader {
   constructor(manifest, assetBasePath) {
     this.manifest = manifest;
-    this.basePath = assetBasePath; // e.g. 'D:/demo3/VPet/VPet-Simulator.Windows/mod/0000_core/pet/vup/'
+    this.basePath = assetBasePath; // e.g. '../assets/vup/'
     this._cache = new Map();       // key: filePath → ImageBitmap
     this._maxCache = 200;          // 最大缓存帧数
     this._accessOrder = [];        // LRU 顺序

@@ -45,8 +45,8 @@ class DesktopPetApp {
       await new Promise(r => setTimeout(r, 50));
     }
 
-    // VPet 资源根目录
-    const assetBase = 'D:/demo3/VPet/VPet-Simulator.Windows/mod/0000_core/pet/vup/';
+    // 本地资源根目录
+    const assetBase = '../assets/vup/';
 
     this.pngLoader = new PngLoader(this._manifest, assetBase);
     this.graphCore = new GraphCore(this.pngLoader);

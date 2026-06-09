@@ -65,6 +65,13 @@
     const walletEl = document.getElementById('wallet-display');
     let currentMoney = Infinity; // 加载前不限制
 
+    function hideCurrentPanel() {
+      const current = window.PetRuntime.currentWindow();
+      if (current && typeof current.hide === 'function') {
+        current.hide().catch(() => {});
+      }
+    }
+
     async function init() {
       try {
         const filter = window.__foodFilter || null;
@@ -140,9 +147,9 @@
             btn.appendChild(eff);
 
             if (canAfford) {
-              btn.addEventListener('click', async () => {
-                await window.PetRuntime.emit('food-selected', { name: it.name, graph: it.graph });
-                setTimeout(() => window.PetRuntime.currentWindow().close(), 100);
+              btn.addEventListener('click', () => {
+                hideCurrentPanel();
+                window.PetRuntime.emit('food-selected', { name: it.name, graph: it.graph }).catch(() => {});
               });
             }
 

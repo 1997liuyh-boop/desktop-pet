@@ -6,6 +6,8 @@ use crate::ai::persona::PersonaSystem;
 use crate::ai::llm_client::{LLMConfig, ChatMessage, chat_stream as llm_chat_stream};
 
 #[cfg(target_os = "windows")]
+use windows::Win32::Foundation::POINT;
+#[cfg(target_os = "windows")]
 use windows::Win32::Media::Audio::{
     eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator,
 };
@@ -15,8 +17,10 @@ use windows::Win32::Media::Audio::Endpoints::IAudioMeterInformation;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
 };
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
-// ── 动画/帧相关 ──
+// ── 动画/帧相�?──
 
 #[tauri::command]
 pub fn greet(name: &str) -> String {
@@ -53,39 +57,131 @@ fn load_json_from_candidates(paths: &[PathBuf]) -> Result<serde_json::Value, Str
     Err(format!("pet-manifest.json not found: {}", errors.join("; ")))
 }
 
-fn resolve_vpet_base(app: &tauri::AppHandle, manifest: &serde_json::Value) -> PathBuf {
-    if let Ok(path) = std::env::var("DESKTOP_PET_VPET_BASE") {
-        let candidate = PathBuf::from(path);
-        if candidate.exists() {
-            return candidate;
+fn vup_dir_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(path) = std::env::var("DESKTOP_PET_VUP_DIR") {
+        candidates.push(PathBuf::from(path));
+    }
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("assets").join("vup"));
+        candidates.push(resource_dir.join("vup"));
+    }
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        candidates.push(current_dir.join("assets").join("vup"));
+    }
+
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("assets")
+            .join("vup"),
+    );
+
+    candidates
+}
+
+fn food_dir_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(path) = std::env::var("DESKTOP_PET_FOOD_DIR") {
+        candidates.push(PathBuf::from(path));
+    }
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("assets").join("image").join("food"));
+        candidates.push(resource_dir.join("image").join("food"));
+    }
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        candidates.push(current_dir.join("assets").join("image").join("food"));
+    }
+
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("assets")
+            .join("image")
+            .join("food"),
+    );
+
+    candidates
+}
+
+fn looks_like_vup_dir(path: &Path) -> bool {
+    path.join("Default").is_dir() && path.join("BDay").is_dir()
+}
+
+fn resolve_vup_base(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let candidates = vup_dir_candidates(app);
+    for candidate in &candidates {
+        if looks_like_vup_dir(candidate) {
+            return Ok(candidate.clone());
         }
     }
 
-    if let Some(source) = manifest
-        .get("meta")
-        .and_then(|meta| meta.get("source"))
-        .and_then(|source| source.as_str())
-    {
-        let candidate = Path::new(source).to_path_buf();
-        if candidate.exists() {
-            return candidate;
+    Err(format!(
+        "本地 vup 资源目录未找�? {}",
+        candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join("; ")
+    ))
+}
+
+fn food_image_name(frame_path: &str) -> Option<String> {
+    let normalized = frame_path.replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
+    let marker = "image/food/";
+    let index = lower.find(marker)?;
+    let name = &normalized[index + marker.len()..];
+    if name.is_empty() || name.contains('/') || name.contains('\\') {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+fn read_food_image_raw(app: &tauri::AppHandle, frame_path: &str) -> Option<Result<Vec<u8>, String>> {
+    let file_name = food_image_name(frame_path)?;
+    let candidates = food_dir_candidates(app);
+    for base in &candidates {
+        let full = base.join(&file_name);
+        if full.is_file() {
+            return Some(fs::read(&full).map_err(|e| {
+                format!(
+                    "读取食物图片失败: {}；资源目�? {}；原�? {}",
+                    file_name,
+                    base.display(),
+                    e
+                )
+            }));
         }
     }
 
-    app.path()
-        .resource_dir()
-        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."))
-        .join("assets")
-        .join("vup")
+    Some(Err(format!(
+        "本地食物图片未找�? {}；候选目�? {}",
+        file_name,
+        candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join("; ")
+    )))
 }
 
 fn read_frame_raw(app: &tauri::AppHandle, frame_path: &str) -> Result<Vec<u8>, String> {
-    let manifest = get_manifest(app.clone())?;
-    let base = resolve_vpet_base(app, &manifest);
+    if let Some(result) = read_food_image_raw(app, frame_path) {
+        return result;
+    }
+
+    let base = resolve_vup_base(app)?;
     let full = base.join(frame_path);
     fs::read(&full).map_err(|e| {
         format!(
-            "读取帧失败: {}；资源根目录: {}；原因: {}",
+            "读取帧失�? {}；资源根目录: {}；原�? {}",
             frame_path,
             base.display(),
             e
@@ -111,15 +207,139 @@ fn parse_frame_duration_ms(name: &str) -> u64 {
         .unwrap_or(125)
 }
 
-fn move_phase_from_dir(name: &str) -> &'static str {
+fn move_phase_hint(name: &str) -> Option<&'static str> {
     let lower = name.to_ascii_lowercase();
-    if lower.starts_with("a_") || lower.ends_with("_a") || lower.contains("_a_") {
-        "a_start"
-    } else if lower.starts_with("c_") || lower.ends_with("_c") || lower.contains("_c_") {
-        "c_end"
+    if lower == "a" || lower.starts_with("a_") || lower.ends_with("_a") || lower.contains("_a_") {
+        Some("a_start")
+    } else if lower == "c" || lower.starts_with("c_") || lower.ends_with("_c") || lower.contains("_c_") {
+        Some("c_end")
+    } else if lower == "b" || lower.starts_with("b_") || lower.ends_with("_b") || lower.contains("_b_") {
+        Some("b_loop")
     } else {
-        "b_loop"
+        None
     }
+}
+
+fn move_mode_from_dir(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    if lower.contains("poorcondition") || lower.contains("poor_condition") {
+        Some("poorcondition")
+    } else if lower.contains("nomal") || lower.contains("normal") {
+        Some("normal")
+    } else if lower.contains("happy") {
+        Some("happy")
+    } else if lower.contains("ill") {
+        Some("ill")
+    } else {
+        None
+    }
+}
+
+fn normalize_move_mode(mode: &str) -> &'static str {
+    match mode.to_ascii_lowercase().as_str() {
+        "happy" => "happy",
+        "poorcondition" | "poor_condition" => "poorcondition",
+        "ill" => "ill",
+        _ => "normal",
+    }
+}
+
+fn move_mode_preference(mode: &str) -> [&'static str; 4] {
+    match normalize_move_mode(mode) {
+        "happy" => ["happy", "normal", "poorcondition", "ill"],
+        "poorcondition" => ["poorcondition", "normal", "happy", "ill"],
+        "ill" => ["ill", "poorcondition", "normal", "happy"],
+        _ => ["normal", "happy", "poorcondition", "ill"],
+    }
+}
+
+#[derive(Debug)]
+struct MoveDirCandidate {
+    phase: &'static str,
+    mode: Option<&'static str>,
+    rel_dir: String,
+    path: PathBuf,
+}
+
+fn dir_has_direct_png(dir: &Path) -> bool {
+    fs::read_dir(dir)
+        .map(|entries| {
+            entries.filter_map(Result::ok).any(|entry| {
+                entry.path().is_file()
+                    && entry
+                        .file_name()
+                        .to_string_lossy()
+                        .to_ascii_lowercase()
+                        .ends_with(".png")
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn collect_move_candidates(
+    dir: &Path,
+    rel_prefix: &str,
+    current_mode: Option<&'static str>,
+    current_phase: Option<&'static str>,
+    out: &mut Vec<MoveDirCandidate>,
+) -> Result<(), String> {
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .map_err(|e| format!("读取行走资源目录失败 {}: {}", dir.display(), e))?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .collect();
+
+    entries.sort_by(|a, b| {
+        a.file_name()
+            .to_string_lossy()
+            .cmp(&b.file_name().to_string_lossy())
+    });
+
+    for entry in entries {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let rel_dir = if rel_prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{}/{}", rel_prefix, name)
+        };
+        let next_mode = move_mode_from_dir(&name).or(current_mode);
+        let next_phase = move_phase_hint(&name).or(current_phase);
+
+        if dir_has_direct_png(&path) {
+            out.push(MoveDirCandidate {
+                phase: next_phase.unwrap_or("b_loop"),
+                mode: next_mode,
+                rel_dir,
+                path,
+            });
+            continue;
+        }
+
+        collect_move_candidates(&path, &rel_dir, next_mode, next_phase, out)?;
+    }
+
+    Ok(())
+}
+
+fn pick_move_candidate<'a>(
+    candidates: &'a [MoveDirCandidate],
+    phase: &'static str,
+    mode_preference: &[&str],
+) -> Option<&'a MoveDirCandidate> {
+    for mode in mode_preference {
+        if let Some(candidate) = candidates
+            .iter()
+            .find(|candidate| candidate.phase == phase && candidate.mode == Some(*mode))
+        {
+            return Some(candidate);
+        }
+    }
+
+    candidates
+        .iter()
+        .find(|candidate| candidate.phase == phase && candidate.mode.is_none())
+        .or_else(|| candidates.iter().find(|candidate| candidate.phase == phase))
 }
 
 fn push_move_dir_frames(
@@ -128,10 +348,11 @@ fn push_move_dir_frames(
     dir_name: &str,
     dir_path: &Path,
 ) -> Result<(), String> {
-    fn collect_png_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) -> Result<(), String> {
+    fn collect_png_files(dir: &Path, out: &mut Vec<(String, String)>) -> Result<(), String> {
         let mut entries: Vec<_> = fs::read_dir(dir)
-            .map_err(|e| format!("读取行走帧目录失败 {}: {}", dir.display(), e))?
+            .map_err(|e| format!("读取行走帧目录失�?{}: {}", dir.display(), e))?
             .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_file())
             .collect();
 
         entries.sort_by(|a, b| {
@@ -142,19 +363,14 @@ fn push_move_dir_frames(
 
         for entry in entries {
             let path = entry.path();
-            if path.is_dir() {
-                collect_png_files(root, &path, out)?;
-                continue;
-            }
-
             let name = entry.file_name().to_string_lossy().to_string();
             if !name.to_ascii_lowercase().ends_with(".png") {
                 continue;
             }
 
             let rel = path
-                .strip_prefix(root)
-                .map_err(|e| e.to_string())?
+                .file_name()
+                .ok_or_else(|| format!("行走帧文件名无效: {}", path.display()))?
                 .to_string_lossy()
                 .replace('\\', "/");
             out.push((rel, name));
@@ -164,7 +380,7 @@ fn push_move_dir_frames(
     }
 
     let mut files = Vec::new();
-    collect_png_files(dir_path, dir_path, &mut files)?;
+    collect_png_files(dir_path, &mut files)?;
 
     for (rel_path, name) in files {
         let index = frames.len();
@@ -181,8 +397,9 @@ fn push_move_dir_frames(
 
 fn get_move_variant_frames(
     app: &tauri::AppHandle,
-    manifest: &serde_json::Value,
+    _manifest: &serde_json::Value,
     variant: &str,
+    mode: &str,
 ) -> Result<serde_json::Value, String> {
     const ALLOWED: [&str; 6] = [
         "walk.left",
@@ -193,43 +410,36 @@ fn get_move_variant_frames(
         "walk.right.faster",
     ];
 
+    let base = resolve_vup_base(app)?;
+
     if !ALLOWED.contains(&variant) {
-        let base = resolve_vpet_base(app, manifest);
         let dynamic_dir = base.join("MOVE").join(variant);
         if !dynamic_dir.exists() {
             return Err(format!("unsupported move variant: {}", variant));
         }
     }
 
-    let base = resolve_vpet_base(app, manifest);
     let dir = base.join("MOVE").join(variant);
     if !dir.exists() {
         return Err(format!("move variant not found: {}", dir.display()));
     }
 
-    let mut subdirs: Vec<_> = fs::read_dir(&dir)
-        .map_err(|e| format!("读取行走资源目录失败 {}: {}", dir.display(), e))?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
-        .collect();
+    let mut candidates = Vec::new();
+    collect_move_candidates(&dir, "", None, None, &mut candidates)?;
 
-    subdirs.sort_by(|a, b| {
-        a.file_name()
-            .to_string_lossy()
-            .cmp(&b.file_name().to_string_lossy())
-    });
-
+    let mode_preference = move_mode_preference(mode);
     let mut a_start = Vec::new();
     let mut b_loop = Vec::new();
     let mut c_end = Vec::new();
 
-    for entry in subdirs {
-        let dir_name = entry.file_name().to_string_lossy().to_string();
-        match move_phase_from_dir(&dir_name) {
-            "a_start" => push_move_dir_frames(&mut a_start, variant, &dir_name, &entry.path())?,
-            "c_end" => push_move_dir_frames(&mut c_end, variant, &dir_name, &entry.path())?,
-            _ => push_move_dir_frames(&mut b_loop, variant, &dir_name, &entry.path())?,
-        }
+    if let Some(candidate) = pick_move_candidate(&candidates, "a_start", &mode_preference) {
+        push_move_dir_frames(&mut a_start, variant, &candidate.rel_dir, &candidate.path)?;
+    }
+    if let Some(candidate) = pick_move_candidate(&candidates, "b_loop", &mode_preference) {
+        push_move_dir_frames(&mut b_loop, variant, &candidate.rel_dir, &candidate.path)?;
+    }
+    if let Some(candidate) = pick_move_candidate(&candidates, "c_end", &mode_preference) {
+        push_move_dir_frames(&mut c_end, variant, &candidate.rel_dir, &candidate.path)?;
     }
 
     if b_loop.is_empty() {
@@ -253,9 +463,18 @@ pub fn get_animation_frames(
     let manifest = get_manifest(app.clone())?;
 
     if let Some(variant) = graph_type.strip_prefix("move.") {
-        match get_move_variant_frames(&app, &manifest, variant) {
+        match get_move_variant_frames(&app, &manifest, variant, &mode) {
             Ok(frames) => return Ok(frames),
-            Err(e) => eprintln!("动态行走帧加载失败，回退 move: {}", e),
+            Err(e) => {
+                if variant.starts_with("walk.")
+                    || variant.starts_with("climb.")
+                    || variant.starts_with("crawl.")
+                    || variant.starts_with("fall.")
+                {
+                    return Err(format!("动态动�?'{}' 加载失败: {}", graph_type, e));
+                }
+                eprintln!("动态行走帧加载失败，回退 move: {}", e);
+            }
         }
     }
 
@@ -277,12 +496,9 @@ pub fn read_png_frames_batch(
     frame_paths: Vec<String>,
 ) -> Result<std::collections::HashMap<String, String>, String> {
     use base64::Engine;
-    let manifest = get_manifest(app.clone())?;
-    let base = resolve_vpet_base(&app, &manifest);
     let mut result = std::collections::HashMap::new();
     for path in frame_paths {
-        let full = base.join(&path);
-        if let Ok(bytes) = fs::read(&full) {
+        if let Ok(bytes) = read_frame_raw(&app, &path) {
             result.insert(path, base64::engine::general_purpose::STANDARD.encode(&bytes));
         }
     }
@@ -297,8 +513,8 @@ pub fn get_screen_info(window: tauri::WebviewWindow) -> Result<serde_json::Value
     let size = monitor.size();
     let scale = monitor.scale_factor();
     Ok(serde_json::json!({
-        "workAreaWidth": size.width as f64 / scale,
-        "workAreaHeight": size.height as f64 / scale,
+        "workAreaWidth": size.width,
+        "workAreaHeight": size.height,
         "scaleFactor": scale,
     }))
 }
@@ -332,6 +548,26 @@ pub fn get_window_position(window: tauri::WebviewWindow) -> Result<serde_json::V
 
 #[cfg(target_os = "windows")]
 #[tauri::command]
+pub fn get_cursor_position() -> Result<serde_json::Value, String> {
+    unsafe {
+        let mut point = POINT::default();
+        GetCursorPos(&mut point).map_err(|e| e.to_string())?;
+        Ok(serde_json::json!({
+            "x": point.x,
+            "y": point.y,
+            "screen": true,
+        }))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+pub fn get_cursor_position() -> Result<serde_json::Value, String> {
+    Err("get_cursor_position is only supported on Windows".into())
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
 pub fn get_system_audio_level() -> Result<f64, String> {
     unsafe {
         let com_initialized = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
@@ -361,7 +597,7 @@ pub fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-/// 辅助窗口(聊天/设置)是否可见 — 用于暂停 SideHide, 防止聊天时宠物被滑出屏幕
+/// 辅助窗口(聊天/设置)是否可见 �?用于暂停 SideHide, 防止聊天时宠物被滑出屏幕
 #[tauri::command]
 pub fn aux_window_visible(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri::Manager;
@@ -375,7 +611,7 @@ pub fn aux_window_visible(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(false)
 }
 
-/// 切换窗口点击穿透 (透明区域鼠标事件透传到下层窗口)
+/// 切换窗口点击穿�?(透明区域鼠标事件透传到下层窗�?
 #[tauri::command]
 pub fn set_clickthrough(window: tauri::WebviewWindow, enabled: bool) -> Result<(), String> {
     window.set_ignore_cursor_events(enabled).map_err(|e| e.to_string())
@@ -520,7 +756,7 @@ pub fn save_memory(app: tauri::AppHandle, memory: PetMemory) -> Result<(), Strin
 
 fn last_items(values: &[String], limit: usize) -> String {
     let start = values.len().saturating_sub(limit);
-    values[start..].join("；")
+    values[start..].join(", ")
 }
 
 #[tauri::command]
@@ -569,7 +805,7 @@ pub fn build_persona_prompt(
     Ok(system.build_prompt(custom, &mood, hunger, happiness, is_working, memory_summary.as_deref()))
 }
 
-// ── LLM 聊天 (流式, 无状态) ──
+// ── LLM 聊天 (流式, 无状�? ──
 
 #[tauri::command]
 pub async fn chat_stream(
@@ -596,7 +832,7 @@ use crate::core::game_core::PetState;
 use crate::core::touch_area::TouchAreaType;
 use crate::logic::main_logic::TouchEventType;
 
-/// 命中检测 — 返回点击部位
+/// 命中检�?�?返回点击部位
 #[tauri::command]
 pub fn hit_test(lx: f64, ly: f64, state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
     let logic = state.logic.lock().map_err(|e| e.to_string())?;
@@ -608,7 +844,7 @@ pub fn hit_test(lx: f64, ly: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
     }
 }
 
-/// 构建前端可读的属性 JSON (VPet 内部字段 → 前端键名映射)
+/// 构建前端可读的属�?JSON (VPet 内部字段 �?前端键名映射)
 /// hunger=饱腹 thirst=口渴 happiness=心情 energy=体力
 fn stats_json(d: &StatsData) -> serde_json::Value {
     serde_json::json!({
@@ -638,13 +874,13 @@ pub fn process_interaction(
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
     let mut logic = state.logic.lock().map_err(|e| e.to_string())?;
 
-    // 命中检测
+    // Hit test before release handling.
     let _ = logic.on_press_start(lx, ly);
 
     // 处理释放
     let result = logic.on_press_end(press_duration_ms, has_moved, &mut core);
 
-    // 根据事件类型更新游戏状态
+    // Update game state from the touch event.
     match result.event {
         TouchEventType::HeadClick => {
             core.set_state(PetState::Idle);
@@ -669,7 +905,7 @@ pub fn process_interaction(
         }
     }
 
-    // 任何交互都重置心情自然下降计时
+    // Any interaction resets passive mood decay.
     stats.data.mark_interaction();
     core.update_graph_type();
 
@@ -701,21 +937,21 @@ pub fn get_pet_status(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_js
     }))
 }
 
-/// 喂食 — 随机挑选一份食物, 套用其真实属性 (1:1 复刻 VPet EatFood)
+/// 喂食 �?随机挑选一份食�? 套用其真实属�?(1:1 复刻 VPet EatFood)
 #[tauri::command]
 pub fn pet_action_feed(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| e.to_string())?;
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
     let mut work = state.work.lock().map_err(|e| e.to_string())?;
 
-    // 手动吃喝优先级高于工作：中断当前工作，动作结束后回到待机。
+    // Manual eating interrupts active work.
     if work.is_active {
         work.stop();
     }
 
-    // 随机挑一份可吃食物, 取其真实属性
+    // Pick a random edible item and apply its real stats.
     let food = crate::systems::food::pick_random("eat")
-        .ok_or("未找到可吃食物")?;
+        .ok_or("no edible food found")?;
     stats.data.eat_food(
         food.exp, food.strength, food.strength_food,
         food.strength_drink, food.feeling, food.health, 0.0,
@@ -736,21 +972,21 @@ pub fn pet_action_feed(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_j
     }))
 }
 
-/// 喝水 — 随机挑选一份饮料, 套用其真实属性 (1:1 复刻 VPet EatFood)
+/// 喝水 �?随机挑选一份饮�? 套用其真实属�?(1:1 复刻 VPet EatFood)
 #[tauri::command]
 pub fn pet_action_drink(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
     let mut core = state.core.lock().map_err(|e| e.to_string())?;
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
     let mut work = state.work.lock().map_err(|e| e.to_string())?;
 
-    // 手动吃喝优先级高于工作：中断当前工作，动作结束后回到待机。
+    // Manual drinking interrupts active work.
     if work.is_active {
         work.stop();
     }
 
-    // 随机挑一份饮料, 取其真实属性
+    // Pick a random drink and apply its real stats.
     let food = crate::systems::food::pick_random("drink")
-        .ok_or("未找到可喝饮料")?;
+        .ok_or("no drink found")?;
     stats.data.eat_food(
         food.exp, food.strength, food.strength_food,
         food.strength_drink, food.feeling, food.health, 0.0,
@@ -771,7 +1007,7 @@ pub fn pet_action_drink(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_
     }))
 }
 
-/// 食物菜单 — 列举所有可吃/可喝食物及其属性 (供前端弹窗展示)
+/// 食物菜单 �?列举所有可�?可喝食物及其属�?(供前端弹窗展�?
 #[tauri::command]
 pub fn get_food_menu() -> Result<serde_json::Value, String> {
     let items: Vec<serde_json::Value> = crate::systems::food::all_foods()
@@ -792,7 +1028,7 @@ pub fn get_food_menu() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "items": items }))
 }
 
-/// 吃指定名字的食物 — 套用其真实属性 (1:1 复刻 VPet EatFood), 供菜单点选
+/// Eat the selected food item from the menu.
 #[tauri::command]
 pub fn pet_action_eat(
     food_name: String,
@@ -807,13 +1043,13 @@ pub fn pet_action_eat(
     }
 
     let food = crate::systems::food::find_food(&food_name)
-        .ok_or_else(|| format!("未找到食物: {}", food_name))?;
+        .ok_or_else(|| format!("food not found: {}", food_name))?;
 
     // 金币不足时拒绝购买，返回提示而非报错
     if stats.data.money < food.price {
         return Ok(serde_json::json!({
             "canAfford": false,
-            "message": format!("金币不足！需要 {:.0} 金币，当前 {:.0} 金币", food.price, stats.data.money),
+            "message": format!("not enough coins: need {:.0}, current {:.0}", food.price, stats.data.money),
             "required": food.price,
             "current": stats.data.money,
             "stats": stats_json(&stats.data),
@@ -828,7 +1064,7 @@ pub fn pet_action_eat(
     );
     stats.data.mark_interaction();
     core.set_state(PetState::Idle);
-    // 药品使用吃动画
+    // Medicine uses the eat animation.
     let anim_graph = if food.graph == "medicine" { "eat" } else { food.graph.as_str() };
     core.current_graph_type = anim_graph.into();
     core.set_action_lock(3.0);
@@ -842,10 +1078,10 @@ pub fn pet_action_eat(
             format!("吃了{}，快点好起来喵~", food.name),
         )
     } else {
-        let verb = if is_drink { "喝" } else { "吃" };
+        let verb = if is_drink { "drink" } else { "eat" };
         (
             format!("正在{}{} ({}: {:.0})", verb, food.name, if is_drink {"口渴"} else {"饱腹"}, stat_now),
-            format!("好{}的{}~", if is_drink {"喝"} else {"吃"}, food.name),
+            format!("{} {}~", if is_drink {"drink"} else {"eat"}, food.name),
         )
     };
 
@@ -860,7 +1096,7 @@ pub fn pet_action_eat(
     }))
 }
 
-/// 玩耍 — VPet 中对应 Play 类型工作, 使用工作动画
+/// 玩�?�?VPet 中对�?Play 类型工作, 使用工作动画
 #[tauri::command]
 pub fn pet_action_play(
     play_type: Option<String>,
@@ -875,13 +1111,13 @@ pub fn pet_action_play(
         .filter(|w| w.work_type == crate::systems::work::WorkType::Play)
         .collect::<Vec<_>>();
     if play_candidates.is_empty() {
-        return Err("未找到玩耍工种".into());
+        return Err("play work not found".into());
     }
 
     let play_work = if let Some(graph) = play_type.as_deref().filter(|v| !v.trim().is_empty()) {
         crate::systems::work::find_work(graph)
             .filter(|w| w.work_type == crate::systems::work::WorkType::Play)
-            .ok_or_else(|| format!("未找到玩耍项目: {}", graph))?
+            .ok_or_else(|| format!("play item not found: {}", graph))?
     } else {
         let index = ((rand::random::<f64>() * play_candidates.len() as f64).floor() as usize)
             .min(play_candidates.len() - 1);
@@ -891,7 +1127,7 @@ pub fn pet_action_play(
     if stats.data.level() < play_work.level_limit {
         return Ok(serde_json::json!({
             "workStarted": false,
-            "message": format!("等级不足, 需要 Lv.{}", play_work.level_limit),
+            "message": format!("level too low, need Lv.{}", play_work.level_limit),
         }));
     }
 
@@ -914,7 +1150,7 @@ pub fn pet_action_play(
         "workName": work_name,
         "duration": dur,
         "moneyBase": money_base,
-        "message": format!("开始{}! 收益进经验, 时长 {:.0} 分钟", work_name, dur / 60.0),
+        "message": format!("started {}: {:.0} minutes", work_name, dur / 60.0),
         "stats": stats_json(&stats.data),
     }))
 }
@@ -925,12 +1161,12 @@ pub fn pet_action_sleep(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_
     let mut core = state.core.lock().map_err(|e| e.to_string())?;
     let work = state.work.lock().map_err(|e| e.to_string())?;
 
-    // 工作中不能睡觉
+    // Sleeping is disabled while work is active.
     if work.is_active {
         return Ok(serde_json::json!({ "sleepToggled": false, "message": "工作中不能睡觉哦" }));
     }
 
-    // 切换睡眠状态
+    // Toggle sleep state.
     if core.state == PetState::Sleep {
         core.set_state(PetState::Idle);
         core.current_graph_type = "default".into();
@@ -952,7 +1188,7 @@ pub fn pet_action_pinch(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_
     stats.data.pinch();
     stats.data.mark_interaction();
     core.current_graph_type = "pinch".into();
-    // pinch 动画: a_start(0.125s) + b_loop(~0.75s×3) + c_end(~0.875s) ≈ 4s
+    // pinch 动画: a_start(0.125s) + b_loop(~0.75s×3) + c_end(~0.875s) �?4s
     core.set_action_lock(5.0);
 
     Ok(serde_json::json!({
@@ -963,7 +1199,7 @@ pub fn pet_action_pinch(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_
     }))
 }
 
-/// 开始工作 (可选工作类型)
+/// 开始工�?(可选工作类�?
 #[tauri::command]
 pub fn pet_action_work(
     work_type: Option<String>,
@@ -993,7 +1229,7 @@ pub fn pet_action_work(
     if stats.data.level() < w.level_limit {
         return Ok(serde_json::json!({
             "workStarted": false,
-            "message": format!("等级不足, 需要 Lv.{}", w.level_limit),
+            "message": format!("level too low, need Lv.{}", w.level_limit),
         }));
     }
     drop(stats);
@@ -1036,12 +1272,12 @@ pub fn pet_action_stop_work(state: tauri::State<'_, Arc<AppState>>) -> Result<se
         "working": false,
         "graphType": "default",
         "mood": stats.get_mood(),
-        "message": if was_working { "已停止" } else { "当前没有进行中的任务" },
+        "message": if was_working { "stopped" } else { "no active task" },
         "stats": stats_json(&stats.data),
     }))
 }
 
-/// 获取可选工作类型列表 (来自 VPet 真实工种)
+/// 获取可选工作类型列�?(来自 VPet 真实工种)
 #[tauri::command]
 pub fn get_work_types() -> Result<Vec<serde_json::Value>, String> {
     let works = crate::systems::work::all_works();
@@ -1061,7 +1297,7 @@ pub fn get_work_types() -> Result<Vec<serde_json::Value>, String> {
         .collect())
 }
 
-/// 游戏时钟推进 (每秒调用一次)
+/// 游戏时钟推进 (每秒调用一�?
 #[tauri::command]
 pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
     use crate::systems::work::{WorkingState, WorkType};
@@ -1073,17 +1309,17 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
     let level_before = stats.data.level();
     let mut completed_work: Option<serde_json::Value> = None;
 
-    // 递减动作锁
+    // Decrement the action lock.
     core.tick_action_lock(dt_seconds);
-    // 累计真实空闲时间 (供 freedrop 心情自然下降)
+    // 累计真实空闲时间 (�?freedrop 心情自然下降)
     stats.data.seconds_since_interaction += dt_seconds;
 
-    // FunctionSpend 每 15 秒触发一次, TimePass=0.05 (1:1 复刻 VPet EventTimer)
+    // FunctionSpend �?15 秒触发一�? TimePass=0.05 (1:1 复刻 VPet EventTimer)
     stats.data.tick_accumulator += dt_seconds;
     while stats.data.tick_accumulator >= 15.0 {
         stats.data.tick_accumulator -= 15.0;
 
-        // 推导当前工作态
+        // Derive the current working state.
         let working_state = if work.is_active {
             WorkingState::Work
         } else if core.state == PetState::Sleep {
@@ -1098,7 +1334,7 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
         };
         work.get_count += get_count_add;
 
-        // 生病时停止工作 (对标 VPet: Ill && Work → Stop)
+        // 生病时停止工�?(对标 VPet: Ill && Work �?Stop)
         if stop_ill && work.is_active {
             work.stop();
             core.set_action_lock(0.0);
@@ -1106,7 +1342,7 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
         }
     }
 
-    // 工作计时累计运行时间；到达定义时长后按 VPet WorkTimer 完成结算。
+    // Advance active work and settle it when its duration is reached.
     work.advance(dt_seconds);
     if work.is_active {
         if let Some(current) = work.now_work.clone() {
@@ -1137,8 +1373,7 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
         }
     }
 
-    // 生病自动卧床: 状态为 ill 时切到睡眠动画; 康复后自动唤醒
-    // (仅影响生病卧床, 不打断用户手动睡觉)
+    // 生病自动卧床: 状态为 ill 时切到睡眠动�? 康复后自动唤�?    // (仅影响生病卧�? 不打断用户手动睡�?
     if core.action_lock_remaining <= 0.0 && !work.is_active {
         let mood = stats.data.get_mood();
         if mood == "ill" && core.state != PetState::Sleep {
@@ -1150,7 +1385,7 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
         }
     }
 
-    // 更新 graph type (工作期间维持该工种专属动画)
+    // 更新 graph type (工作期间维持该工种专属动�?
     core.mood = stats.data.get_mood();
     if work.is_active {
         core.current_graph_type = work
@@ -1180,23 +1415,12 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
 }
 
 fn pick_edge_move_graph(side: &str, speed_px_per_sec: f64) -> String {
-    let roll = rand::random::<f64>();
-    let family = if speed_px_per_sec >= 110.0 {
-        if roll < 0.45 { "fall" } else if roll < 0.75 { "crawl" } else if roll < 0.9 { "climb.top" } else { "climb" }
-    } else if speed_px_per_sec <= 65.0 {
-        if roll < 0.55 { "crawl" } else if roll < 0.85 { "climb" } else { "climb.top" }
-    } else if roll < 0.45 {
-        "climb"
-    } else if roll < 0.75 {
-        "climb.top"
-    } else {
-        "crawl"
-    };
-    format!("move.{}.{}", family, side)
+    let _ = speed_px_per_sec;
+    format!("move.climb.{}", side)
 }
 
 /// 自主行走 tick
-/// 返回窗口位移量 + 朝向 + 动画类型
+/// 返回窗口位移�?+ 朝向 + 动画类型
 #[tauri::command]
 pub fn walk_tick(
     dt_seconds: f64,
@@ -1219,37 +1443,65 @@ pub fn walk_tick(
         return Ok(serde_json::json!({ "dx": 0, "dy": 0, "facingRight": core.facing_right, "graphType": core.current_graph_type }));
     }
 
-    let (raw_dx, dy) = walk.update(dt_seconds);
+    let mood = stats.data.get_mood();
+    let (_system_dx, dy) = walk.update(dt_seconds);
 
-    // Controller 边缘检测 + 弹壁
+    if walk.state == crate::systems::walk::WalkState::Walking {
+        walk.speed_px_per_sec = if mood == "poorCondition" || mood == "ill" {
+            55.0
+        } else if mood == "happy" {
+            115.0
+        } else {
+            80.0
+        };
+    }
+
+    let raw_dx = if walk.state == crate::systems::walk::WalkState::Walking {
+        let pixels = (walk.speed_px_per_sec * dt_seconds).round().max(1.0) as i32;
+        if walk.direction > 0.0 { pixels } else { -pixels }
+    } else {
+        0
+    };
+
+    // Controller 边缘检�?+ 弹壁
     let (dx, new_dir) = controller.check_screen_edge(window_x, window_w, screen_w, raw_dx, walk.direction);
     walk.direction = new_dir;
 
     // 更新朝向
     core.facing_right = walk.direction > 0.0;
 
-    // 使用 VPet 的方向/速度/状态行走资源；非行走时返回闲置子行为
-    let mood = stats.data.get_mood();
+    // 使用 VPet 的方�?心情行走资源；非行走时返回闲置子行为
     let edge_hit = raw_dx != 0 && dx != raw_dx;
+    let edge_side = if edge_hit {
+        Some(if raw_dx > 0 { "right" } else { "left" })
+    } else {
+        None
+    };
     let graph_type = if edge_hit {
-        let side = if raw_dx > 0 { "right" } else { "left" };
-        pick_edge_move_graph(side, walk.speed_px_per_sec)
+        pick_edge_move_graph(edge_side.unwrap_or("left"), walk.speed_px_per_sec)
     } else if walk.state == crate::systems::walk::WalkState::Walking && dx != 0 {
         let direction = if core.facing_right { "right" } else { "left" };
-        let speed_suffix = if mood == "poorCondition" || mood == "ill" || walk.speed_px_per_sec <= 65.0 {
+        let speed_suffix = if mood == "poorCondition" || mood == "ill" {
             ".slow"
-        } else if walk.speed_px_per_sec >= 110.0 {
+        } else if mood == "happy" {
             ".faster"
         } else {
             ""
         };
         format!("move.walk.{}{}", direction, speed_suffix)
     } else if walk.state == crate::systems::walk::WalkState::Walking {
-        // 切换帧: 状态已变为 Walking 但本帧 dx=0，保持 default 避免走路动画在移动前闪现
+        // 切换�? 状态已变为 Walking 但本�?dx=0，保�?default 避免走路动画在移动前闪现
         "default".to_string()
     } else {
         walk.current_graph_type().to_string()
     };
+    let edge_move_dy = if edge_hit { -5 } else { 0 };
+    let edge_duration_ms = if edge_hit { 3200 } else { 0 };
+
+    if edge_hit {
+        walk.reset_to_idle();
+        core.current_graph_type = "default".into();
+    }
 
     Ok(serde_json::json!({
         "dx": dx,
@@ -1258,6 +1510,10 @@ pub fn walk_tick(
         "graphType": graph_type,
         "walking": walk.state == crate::systems::walk::WalkState::Walking,
         "edgeHit": edge_hit,
+        "edgeSide": edge_side,
+        "edgeLoop": edge_hit,
+        "edgeMoveDy": edge_move_dy,
+        "edgeDurationMs": edge_duration_ms,
         "speedPxPerSec": walk.speed_px_per_sec,
     }))
 }
@@ -1278,7 +1534,7 @@ pub fn reset_walk_state(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_
     }))
 }
 
-/// 打开设置窗口 (预配置窗口, 居中, 可拖动)
+/// 打开设置窗口 (预配置窗�? 居中, 可拖�?
 #[tauri::command]
 pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
@@ -1291,7 +1547,7 @@ pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     Err("Settings window not found".into())
 }
 
-/// 根据宠物窗口位置计算面板贴边坐标，避免遮挡宠物
+/// Position a panel near the pet window without covering it.
 fn panel_position_near_pet(
     app: &tauri::AppHandle,
     panel_win: &tauri::WebviewWindow,
@@ -1308,7 +1564,7 @@ fn panel_position_near_pet(
         .and_then(|ms| ms.into_iter().next())
         .map(|m| (m.size().width as i32, m.size().height as i32))
         .unwrap_or((1920, 1080));
-    // 优先放右侧，不够放左侧
+    // Prefer the right side, then fall back to the left side.
     let x = if pet_pos.x + pet_size.width as i32 + gap + panel_w <= screen_w {
         pet_pos.x + pet_size.width as i32 + gap
     } else {
@@ -1320,14 +1576,14 @@ fn panel_position_near_pet(
     ));
 }
 
-/// 打开食物面板 (宠物旁边定位, 不遮挡)
+/// 打开食物面板 (宠物旁边定位, 不遮�?
 #[tauri::command]
 pub fn open_food_panel(app: tauri::AppHandle, filter: Option<String>) -> Result<(), String> {
     use tauri::Manager;
 
     let win = app.get_webview_window("food-panel").ok_or("Food panel window not found")?;
     panel_position_near_pet(&app, &win, 280, 440);
-    // 设置筛选条件并刷新列表 (面板走 hide 而非 destroy, 需手动重新初始化)
+    // 设置筛选条件并刷新列表 (面板�?hide 而非 destroy, 需手动重新初始�?
     let filter_json = serde_json::to_string(&filter).unwrap_or("null".into());
     let _ = win.eval(&format!(
         "window.__foodFilter = {}; var el=document.getElementById('food-list'); if(el)el.innerHTML=''; var em=document.getElementById('empty-msg'); if(em)em.style.display='none'; if(typeof init==='function')init();",
@@ -1338,14 +1594,14 @@ pub fn open_food_panel(app: tauri::AppHandle, filter: Option<String>) -> Result<
     Ok(())
 }
 
-/// 打开工作面板 (宠物旁边定位, 不遮挡)
+/// 打开工作面板 (宠物旁边定位, 不遮�?
 #[tauri::command]
 pub fn open_work_panel(app: tauri::AppHandle, kind: Option<String>) -> Result<(), String> {
     use tauri::Manager;
 
     let win = app.get_webview_window("work-panel").ok_or("Work panel window not found")?;
     panel_position_near_pet(&app, &win, 280, 460);
-    // 设置类型并刷新列表 (面板走 hide 而非 destroy, 需手动重新初始化)
+    // 设置类型并刷新列�?(面板�?hide 而非 destroy, 需手动重新初始�?
     let kind_json = serde_json::to_string(&kind).unwrap_or("\"work\"".into());
     let _ = win.eval(&format!(
         "window.__workKind = {}; var el=document.getElementById('work-list'); if(el)el.innerHTML=''; var em=document.getElementById('empty-msg'); if(em)em.style.display='none'; if(typeof init==='function')init();",
@@ -1356,7 +1612,7 @@ pub fn open_work_panel(app: tauri::AppHandle, kind: Option<String>) -> Result<()
     Ok(())
 }
 
-/// 打开状态面板 (宠物旁边定位, 不遮挡)
+/// 打开状态面�?(宠物旁边定位, 不遮�?
 #[tauri::command]
 pub fn open_status_panel(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
@@ -1368,7 +1624,7 @@ pub fn open_status_panel(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 作弊: 设置等级 (通过调整经验值)
+/// 作弊: 设置等级 (通过调整经验�?
 #[tauri::command]
 pub fn cheat_set_level(level: i32, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
@@ -1380,8 +1636,8 @@ pub fn cheat_set_level(level: i32, state: tauri::State<'_, Arc<AppState>>) -> Re
     Ok(serde_json::json!({ "level": target_level, "exp": exp }))
 }
 
-/// 作弊: 强制设置单项属性值 (调试用)
-/// stat 可选: health / strength / strength_food / strength_drink / feeling
+/// 作弊: 强制设置单项属性�?(调试�?
+/// stat 可�? health / strength / strength_food / strength_drink / feeling
 #[tauri::command]
 pub fn cheat_set_stat(stat: String, value: f64, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
@@ -1392,7 +1648,7 @@ pub fn cheat_set_stat(stat: String, value: f64, state: tauri::State<'_, Arc<AppS
         "hunger" | "strength_food"   => stats.data.strength_food = v,
         "thirst" | "strength_drink"  => stats.data.strength_drink = v,
         "happiness" | "feeling"      => stats.data.feeling = v,
-        _ => return Err(format!("未知属性: {stat}")),
+        _ => return Err(format!("unknown stat: {stat}")),
     }
     stats.data.mode = stats.data.get_mood();
     stats.save();
@@ -1417,7 +1673,7 @@ pub fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
         ));
     }
 
-    // 重新显示并置顶宠物窗口
+    // Show the pet window and keep it above the chat panel.
     if let Some(pet) = app.get_webview_window("pet") {
         let _ = pet.show();
         let _ = pet.set_always_on_top(true);
@@ -1435,7 +1691,7 @@ pub fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
 
 // ── TTS 语音合成 ──
 
-/// TTS 配置（与 LLM 配置独立存储）
+/// TTS config stored separately from the LLM config.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TtsConfig {
     #[serde(default = "tts_default_endpoint")]
@@ -1448,10 +1704,10 @@ pub struct TtsConfig {
     pub style: String,
 }
 
-fn tts_default_endpoint() -> String { "https://token-plan-cn.xiaomimimo.com/v1/chat/completions".into() }
+fn tts_default_endpoint() -> String { "https://api.xiaomimimo.com/v1/chat/completions".into() }
 fn tts_default_model()    -> String { "mimo-v2.5-tts".into() }
 fn tts_default_voice()    -> String { "冰糖".into() }
-fn tts_default_style()    -> String { "活泼可爱，甜美温柔".into() }
+fn tts_default_style()    -> String { "可爱萝莉音，情绪随文本起伏，语调轻快，尾音上扬".into() }
 
 impl Default for TtsConfig {
     fn default() -> Self {
@@ -1478,7 +1734,7 @@ pub fn load_tts_config(app: tauri::AppHandle) -> Result<TtsConfig, String> {
     serde_json::from_str(&content).map_err(|e| e.to_string())
 }
 
-/// 保存 TTS API Key（独立文件，不混入 tts-config.json）
+/// Save the TTS API key separately from tts-config.json.
 #[tauri::command]
 pub fn save_tts_api_key(app: tauri::AppHandle, api_key: String) -> Result<(), String> {
     fs::write(data_dir(&app)?.join("tts-api-key.txt"), api_key).map_err(|e| e.to_string())
@@ -1493,12 +1749,12 @@ pub fn has_tts_api_key(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(!key.trim().is_empty())
 }
 
-/// 调用 TTS API，返回 base64 WAV 字符串
+/// Call the TTS API and return base64 WAV data.
 #[tauri::command]
 pub async fn tts_speak(app: tauri::AppHandle, text: String) -> Result<String, String> {
     let key_path = data_dir(&app)?.join("tts-api-key.txt");
     if !key_path.exists() {
-        return Err("TTS API Key 未配置".into());
+        return Err("TTS API Key not configured".into());
     }
     let api_key = fs::read_to_string(&key_path).map_err(|e| e.to_string())?;
     let api_key = api_key.trim().to_string();
@@ -1506,7 +1762,7 @@ pub async fn tts_speak(app: tauri::AppHandle, text: String) -> Result<String, St
         return Err("TTS API Key 为空".into());
     }
 
-    // 读取独立 TTS 配置，不存在时使用默认值
+    // Load independent TTS config; use defaults when it does not exist.
     let cfg = {
         let path = data_dir(&app)?.join("tts-config.json");
         if path.exists() {
@@ -1517,11 +1773,22 @@ pub async fn tts_speak(app: tauri::AppHandle, text: String) -> Result<String, St
         }
     };
 
+    let default_style = tts_default_style();
+    let style = cfg.style.trim();
+    let style_prompt = if style.is_empty() {
+        default_style
+    } else if style.contains("可爱萝莉音") {
+        style.to_string()
+    } else {
+        format!("{}；{}", style, default_style)
+    };
+    let assistant_content = format!("[自然]{}", text.trim());
+
     let body = serde_json::json!({
         "model": cfg.model,
         "messages": [
-            { "role": "user", "content": cfg.style },
-            { "role": "assistant", "content": text }
+            { "role": "assistant", "content": assistant_content },
+            { "role": "user", "content": style_prompt }
         ],
         "audio": { "format": "wav", "voice": cfg.voice }
     });
@@ -1553,7 +1820,7 @@ pub async fn tts_speak(app: tauri::AppHandle, text: String) -> Result<String, St
         .ok_or_else(|| format!("TTS 响应格式异常: {}", json))
 }
 
-/// SideHide 边缘隐藏检测 + 弹出
+/// SideHide 边缘隐藏检�?+ 弹出
 #[tauri::command]
 pub fn sidehide_check(
     window_x: i32,

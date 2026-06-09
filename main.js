@@ -668,12 +668,12 @@ ipcMain.on('read-asset-file', (event, relativePath) => {
   }
 });
 
-// 读取 VPet PNG 帧（返回 base64）
+// 读取本地 assets/vup PNG 帧（返回 base64）
 ipcMain.on('read-png-frame', (event, framePath) => {
   try {
-    // framePath 是相对于 VPet vup 目录的路径，如 "Default/Nomal/1/_000_125.png"
-    const vpetBase = 'D:/demo3/VPet/VPet-Simulator.Windows/mod/0000_core/pet/vup/';
-    const fullPath = path.join(vpetBase, framePath);
+    // framePath 是相对于 assets/vup 的路径，如 "Default/Nomal/1/_000_125.png"
+    const assetBase = path.join(app.getAppPath(), 'assets', 'vup');
+    const fullPath = path.join(assetBase, framePath);
     const buffer = fs.readFileSync(fullPath);
     event.returnValue = buffer.toString('base64');
   } catch (e) {

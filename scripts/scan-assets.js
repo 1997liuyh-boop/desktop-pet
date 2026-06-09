@@ -1,10 +1,10 @@
-// 扫描 VPet 资产目录，生成动画清单 JSON
-// 用法: node scripts/scan-assets.js <VPet_vup_dir> <output_json>
+// 扫描本地 vup 资产目录，生成动画清单 JSON
+// 用法: node scripts/scan-assets.js <assets_vup_dir> <output_json>
 
 const fs = require('fs');
 const path = require('path');
 
-const VPET_DIR = process.argv[2] || 'D:/demo3/VPet/VPet-Simulator.Windows/mod/0000_core/pet/vup';
+const VUP_DIR = process.argv[2] || path.join('assets', 'vup');
 const OUTPUT = process.argv[3] || 'assets/pet-manifest.json';
 
 // === GraphType 映射：目录名 → 动画类型 ===
@@ -45,6 +45,190 @@ const DIR_TO_MODE = {
   'ill': 'ill',
 };
 
+const MODE_TYPES = ['happy', 'normal', 'poorCondition', 'ill'];
+
+const SWITCH_TO_GRAPH = {
+  Up: 'switch_up',
+  Down: 'switch_down',
+  Hunger: 'switch_hunger',
+  Thirsty: 'switch_thirsty',
+};
+
+function graphSlug(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function modeFromName(name) {
+  if (DIR_TO_MODE[name]) return DIR_TO_MODE[name];
+  const lower = String(name || '').toLowerCase();
+  const tokens = lower.split(/[^a-z0-9]+/).filter(Boolean);
+  if (tokens.includes('poorcondition') || lower.includes('poorcondition')) return 'poorCondition';
+  if (tokens.includes('nomal') || tokens.includes('normal')) return 'normal';
+  if (tokens.includes('happy')) return 'happy';
+  if (tokens.includes('ill')) return 'ill';
+  return null;
+}
+
+function sortedDirEntries(node) {
+  return Object.entries(node.dirs).sort((a, b) =>
+    a[0].localeCompare(b[0], undefined, { numeric: true })
+  );
+}
+
+function ensureModePhase(modes, mode, phase) {
+  modes[mode] = modes[mode] || {};
+  modes[mode][phase] = modes[mode][phase] || null;
+  return modes[mode];
+}
+
+function setModePhaseOnce(modes, mode, phase, frames) {
+  if (!frames || frames.length === 0) return;
+  const entry = ensureModePhase(modes, mode, phase);
+  if (!entry[phase]) entry[phase] = frames;
+}
+
+function firstFrameBranch(node, vupDir) {
+  if (node.pngs.length > 0) return collectPngs(node, vupDir);
+
+  for (const [_, child] of sortedDirEntries(node)) {
+    const frames = firstFrameBranch(child, vupDir);
+    if (frames.length > 0) return frames;
+  }
+
+  return [];
+}
+
+function parsePhasesInsideMode(modeNode, mode, vupDir, modes) {
+  if (modeNode.pngs.length > 0) {
+    setModePhaseOnce(modes, mode, 'b_loop', collectPngs(modeNode, vupDir));
+  }
+
+  for (const [phaseName, phaseNode] of sortedDirEntries(modeNode)) {
+    const phase = guessAnimatType(phaseName);
+    const frames = firstFrameBranch(phaseNode, vupDir);
+    setModePhaseOnce(modes, mode, phase, frames);
+  }
+}
+
+function parseGenericPhasesForAllModes(node, vupDir, modes) {
+  const phaseDirs = sortedDirEntries(node);
+  if (node.pngs.length > 0) {
+    for (const mode of MODE_TYPES) {
+      setModePhaseOnce(modes, mode, 'b_loop', collectPngs(node, vupDir));
+    }
+  }
+
+  for (const [phaseName, phaseNode] of phaseDirs) {
+    const phase = guessAnimatType(phaseName);
+    const frames = firstFrameBranch(phaseNode, vupDir);
+    if (!frames.length) continue;
+    for (const mode of MODE_TYPES) {
+      setModePhaseOnce(modes, mode, phase, frames);
+    }
+  }
+}
+
+function parsePhasedModeTree(rootNode, vupDir) {
+  const modes = {};
+
+  if (rootNode.pngs.length > 0) {
+    for (const mode of MODE_TYPES) {
+      setModePhaseOnce(modes, mode, 'b_loop', collectPngs(rootNode, vupDir));
+    }
+  }
+
+  for (const [name, node] of sortedDirEntries(rootNode)) {
+    const directMode = DIR_TO_MODE[name];
+    if (directMode) {
+      parsePhasesInsideMode(node, directMode, vupDir, modes);
+      continue;
+    }
+
+    const childModeDirs = sortedDirEntries(node).filter(([childName]) => !!DIR_TO_MODE[childName]);
+    if (childModeDirs.length > 0) {
+      for (const [childName, childNode] of childModeDirs) {
+        parsePhasesInsideMode(childNode, DIR_TO_MODE[childName], vupDir, modes);
+      }
+      continue;
+    }
+
+    const embeddedMode = modeFromName(name);
+    if (embeddedMode) {
+      const phase = guessAnimatType(name);
+      const frames = firstFrameBranch(node, vupDir);
+      setModePhaseOnce(modes, embeddedMode, phase, frames);
+      continue;
+    }
+
+    parseGenericPhasesForAllModes(node, vupDir, modes);
+  }
+
+  for (const [mode, phases] of Object.entries(modes)) {
+    for (const [phase, frames] of Object.entries(phases)) {
+      if (!frames || frames.length === 0) delete phases[phase];
+    }
+    if (Object.keys(phases).length === 0) delete modes[mode];
+  }
+
+  return modes;
+}
+
+function buildSimpleGraph(graphType, graphNode, vupDir, manifest) {
+  const modes = parsePhasedModeTree(graphNode, vupDir);
+  if (Object.keys(modes).length > 0) manifest.animations[graphType] = modes;
+}
+
+function buildStateAnimations(stateRoot, vupDir, manifest) {
+  for (const [stateName, stateNode] of sortedDirEntries(stateRoot)) {
+    const graphType = stateName.toLowerCase();
+    const modes = parsePhasedModeTree(stateNode, vupDir);
+    if (Object.keys(modes).length > 0) manifest.animations[graphType] = modes;
+  }
+
+  if (manifest.animations.stateone && !manifest.animations.state) {
+    manifest.animations.state = manifest.animations.stateone;
+  }
+}
+
+function buildSwitchAnimations(switchRoot, vupDir, manifest) {
+  for (const [switchName, switchNode] of sortedDirEntries(switchRoot)) {
+    const graphType = SWITCH_TO_GRAPH[switchName] || `switch_${graphSlug(switchName)}`;
+    const modes = parsePhasedModeTree(switchNode, vupDir);
+    if (Object.keys(modes).length > 0) manifest.animations[graphType] = modes;
+  }
+
+  if (manifest.animations.switch_down && !manifest.animations.switch) {
+    manifest.animations.switch = manifest.animations.switch_down;
+  }
+}
+
+function buildIdleAnimations(idleRoot, vupDir, manifest) {
+  const builtGraphs = [];
+
+  for (const [actionName, actionNode] of sortedDirEntries(idleRoot)) {
+    const suffix = graphSlug(actionName);
+    if (!suffix) continue;
+
+    const graphType = `idle_${suffix}`;
+    const modes = parsePhasedModeTree(actionNode, vupDir);
+    if (Object.keys(modes).length > 0) {
+      manifest.animations[graphType] = modes;
+      builtGraphs.push(graphType);
+    }
+  }
+
+  const preferred = ['idle_yawning', 'idle_meow', 'idle_aside', 'idle_squat', 'idle_boring']
+    .find((graphType) => manifest.animations[graphType]);
+  const alias = preferred || builtGraphs[0];
+  if (alias && !manifest.animations.idle) {
+    manifest.animations.idle = manifest.animations[alias];
+  }
+}
+
 // === animatType 映射：子目录名模式 ===
 function guessAnimatType(dirName) {
   const upper = dirName.toUpperCase();
@@ -66,7 +250,9 @@ function extractDuration(filename) {
 
 // 扫描目录树
 function scanDir(dirPath, relativeRoot) {
-  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  const entries = fs
+    .readdirSync(dirPath, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   const result = { dirs: {}, pngs: [] };
 
   for (const entry of entries) {
@@ -116,54 +302,27 @@ function buildManifest(vupDir) {
       continue;
     }
 
-    manifest.animations[graphType] = {};
-
-    // 遍历二级目录：可能是 ModeType 或 AnimatType
-    for (const [subName, subDir] of Object.entries(graphDir.dirs)) {
-      const modeType = DIR_TO_MODE[subName];
-
-      if (modeType) {
-        // subName 是 ModeType，下一层是 AnimatType
-        manifest.animations[graphType][modeType] = {};
-
-        for (const [animName, animDir] of Object.entries(subDir.dirs)) {
-          const animatType = guessAnimatType(animName);
-          const frames = collectFramePaths(animDir, vupDir);
-          if (frames.length > 0) {
-            manifest.animations[graphType][modeType][animatType] = frames;
-          }
-        }
-
-        // 如果该 modeType 目录下直接有 PNG
-        if (subDir.pngs.length > 0) {
-          manifest.animations[graphType][modeType]['single'] = collectPngs(subDir, vupDir);
-        }
-
-      } else {
-        // subName 是 AnimatType，无 ModeType 区分（所有状态通用）
-        const animatType = guessAnimatType(subName);
-        const frames = collectFramePaths(subDir, vupDir);
-        if (frames.length > 0) {
-          // 注册到所有 4 种状态
-          for (const mt of ['happy', 'normal', 'poorCondition', 'ill']) {
-            if (!manifest.animations[graphType][mt]) {
-              manifest.animations[graphType][mt] = {};
-            }
-            manifest.animations[graphType][mt][animatType] = frames;
-          }
-        }
-      }
+    if (graphDirName === 'State') {
+      buildStateAnimations(graphDir, vupDir, manifest);
+      continue;
     }
 
-    // 顶级目录直接有 PNG（无子目录）
-    if (graphDir.pngs.length > 0) {
-      for (const mt of ['happy', 'normal', 'poorCondition', 'ill']) {
-        if (!manifest.animations[graphType][mt]) {
-          manifest.animations[graphType][mt] = {};
-        }
-        manifest.animations[graphType][mt]['single'] = collectPngs(graphDir, vupDir);
-      }
+    if (graphDirName === 'Switch') {
+      buildSwitchAnimations(graphDir, vupDir, manifest);
+      continue;
     }
+
+    if (graphDirName === 'IDEL') {
+      buildIdleAnimations(graphDir, vupDir, manifest);
+      continue;
+    }
+
+    if (graphDirName === 'MOVE') {
+      manifest.animations[graphType] = {};
+      continue;
+    }
+
+    buildSimpleGraph(graphType, graphDir, vupDir, manifest);
   }
 
   return manifest;
@@ -361,8 +520,8 @@ function collectPngs(dir, root) {
 
 // === 运行 ===
 try {
-  const manifest = buildManifest(VPET_DIR);
-  fs.writeFileSync(OUTPUT, JSON.stringify(manifest, null, 2), 'utf-8');
+  const manifest = buildManifest(VUP_DIR);
+  fs.writeFileSync(OUTPUT, JSON.stringify(manifest), 'utf-8');
 
   // 统计
   let totalAnims = 0;

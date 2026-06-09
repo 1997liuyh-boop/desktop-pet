@@ -12,7 +12,7 @@
         "label": "pet",
         "title": "虚拟桌宠模拟器",
         "width": 250,
-        "height": 250,
+        "height": 330,
         "transparent": true,
         "decorations": false,
         "shadow": false,
@@ -108,7 +108,9 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "../assets/pet-manifest.json"
+      "../assets/pet-manifest.json",
+      "../assets/vup",
+      "../assets/image/food"
     ]
   }
 }

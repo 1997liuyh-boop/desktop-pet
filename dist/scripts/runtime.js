@@ -55,6 +55,8 @@
         return { workAreaWidth: window.innerWidth || 500, workAreaHeight: window.innerHeight || 500, scaleFactor: window.devicePixelRatio || 1 };
       case 'get_window_position':
         return { x: 0, y: 0, width: window.innerWidth || 500, height: window.innerHeight || 500 };
+      case 'get_cursor_position':
+        return null;
       case 'move_window_by':
       case 'set_window_position':
       case 'set_clickthrough':
@@ -185,6 +187,9 @@
     },
 
     currentWindow() {
+      if (tauriWindow && typeof tauriWindow.getCurrentWindow === 'function') {
+        return tauriWindow.getCurrentWindow();
+      }
       if (tauriWindow && typeof tauriWindow.getCurrent === 'function') {
         return tauriWindow.getCurrent();
       }

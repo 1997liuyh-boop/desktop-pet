@@ -34,11 +34,11 @@ impl Controller {
         let mut dir = current_dir;
         let new_x = window_x + dx;
 
-        if new_x + window_w > screen_w - self.margin {
-            dx = (screen_w - self.margin - window_w) - window_x;
+        if new_x + window_w > screen_w {
+            dx = (screen_w - window_w) - window_x;
             dir = -1.0;
-        } else if new_x < self.margin {
-            dx = self.margin - window_x;
+        } else if new_x < 0 {
+            dx = -window_x;
             dir = 1.0;
         }
 

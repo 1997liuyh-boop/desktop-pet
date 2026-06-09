@@ -36,9 +36,9 @@ pub struct Food {
 }
 
 impl Food {
-    /// 食物图片相对路径 (相对 vup 资产根, 回溯到 image/food/)
+    /// 食物图片相对路径 (相对本项目 assets 根目录)
     pub fn image_rel_path(&self) -> String {
-        format!("../../image/food/{}.png", self.name)
+        format!("image/food/{}.png", self.name)
     }
 }
 
