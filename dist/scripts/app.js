@@ -12,7 +12,7 @@ const MUSIC_RELEASE_MS = 3000;
 const MUSIC_POLL_MS = 1000;
 const MISCHIEF_MIN_MS = 25000;
 const MISCHIEF_MAX_MS = 45000;
-const CHATTER_AI_INTERVAL_MS = 20000;
+const CHATTER_AI_INTERVAL_MS = 30000;
 const CHATTER_TOPICS = [
   '诗歌和晚风', '人生和远方', '今天的小确幸', '桌面上的宇宙',
   '给主人一句鼓励', '猫猫式哲学', '季节、天气和心情',
@@ -34,12 +34,17 @@ const PROACTIVE_SCENE_CONTEXT_MIN_MS = 90000;
 const PROACTIVE_IDLE_MS = 180000;
 const PROACTIVE_SOFT_IDLE_MS = 90000;
 const PROACTIVE_SPEECH_MAX_CHARS = 72;
+const SING_SPEECH_MAX_CHARS = 96;
+const SING_PERFORMANCE_LOCK_MS = 11000;
 const TTS_DEDUPE_WINDOW_MS = 3000;
 const PET_BODY_VIEWPORT_SIZE = 250;
 const FOOD_ANIMATION_LOGICAL_SIZE = 500;
-const PET_BUBBLE_AREA_HEIGHT = 80;
-const PET_BUBBLE_MAX_HEIGHT = PET_BUBBLE_AREA_HEIGHT - 12;
+const PET_BUBBLE_AREA_HEIGHT = 128;
+const PET_BUBBLE_MAX_HEIGHT = PET_BUBBLE_AREA_HEIGHT - 10;
 const EDGE_CLIMB_STEP_PX = 12;
+const EDGE_FALL_STEP_PX = 48;
+const EDGE_FALL_TICK_MS = 24;
+const EDGE_FALL_BOTTOM_SAFE_GAP_PX = 56;
 const EDGE_CLIMB_MAX_MS = 180000;
 const GRAPH_TYPE_ALIASES = {
   idle: [
@@ -602,8 +607,16 @@ class ToolBar {
 
   // ── 子菜单 ──
 
-  _createCompactModal(titleText) {
+  _createCompactModal(titleText, options = {}) {
     const mask = document.createElement('div');
+    mask.className = 'tb-panel';
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      mask.remove();
+      if (typeof options.onClose === 'function') options.onClose();
+    };
     Object.assign(mask.style, {
       position: 'fixed', inset: '0', zIndex: '10000',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -642,16 +655,16 @@ class ToolBar {
       cursor: 'pointer', fontSize: '16px', lineHeight: '1', color: '#bbb',
       background: 'transparent', border: '0', padding: '2px 4px',
     });
-    closeBtn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); mask.remove(); });
+    closeBtn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); close(); });
     header.appendChild(title);
     header.appendChild(closeBtn);
     panel.appendChild(header);
 
-    mask.addEventListener('mousedown', () => mask.remove());
+    mask.addEventListener('mousedown', close);
     document.body.appendChild(mask);
     mask.appendChild(panel);
     this.app._stopUiPointerEvents(mask);
-    return { mask, panel };
+    return { mask, panel, close };
   }
 
   _showFeedSub(anchor) {
@@ -693,6 +706,7 @@ class ToolBar {
     const items = [
       { label: '睡觉', action: () => this._handleSleep() },
       { label: '戳脸', action: () => { this.hide(); this.app._handlePinch(); } },
+      { label: '唱歌', action: () => this._showSingPrompt() },
       { label: '玩耍面板', action: () => this._showWorkPanel('play') },
       { label: '工作面板', action: () => this._showWorkPanel('work') },
     ];
@@ -701,6 +715,93 @@ class ToolBar {
     }
     items.push({ label: '聊天', action: () => { this.hide(); this.app._openChat(); } });
     this._showSubmenu(anchor, items);
+  }
+
+  _showSingPrompt() {
+    this.app._toolbarActive = true;
+    this.app._markChatActive(20000);
+    let keyHandler = null;
+    const modal = this._createCompactModal('想听什么歌？', {
+      onClose: () => {
+        this.app._toolbarActive = false;
+        if (keyHandler) document.removeEventListener('keydown', keyHandler);
+      },
+    });
+
+    const hint = document.createElement('div');
+    hint.textContent = '输入歌名后我再唱给你听。';
+    Object.assign(hint.style, {
+      fontSize: '12px', color: '#b8b8b8', marginBottom: '8px', lineHeight: '1.45',
+    });
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 40;
+    input.placeholder = '输入歌名';
+    Object.assign(input.style, {
+      width: '100%', boxSizing: 'border-box', marginBottom: '6px',
+      background: 'rgba(255,255,255,0.10)', color: '#f5f5f5',
+      border: '1px solid rgba(255,255,255,0.18)', borderRadius: '6px',
+      padding: '7px 8px', outline: 'none', fontSize: '12px',
+      fontFamily: '"Microsoft YaHei", sans-serif',
+    });
+
+    const error = document.createElement('div');
+    Object.assign(error.style, {
+      minHeight: '16px', fontSize: '11px', color: '#fca5a5', marginBottom: '8px',
+    });
+
+    const actions = document.createElement('div');
+    Object.assign(actions.style, { display: 'flex', gap: '8px', justifyContent: 'flex-end' });
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.textContent = '取消';
+    Object.assign(cancelBtn.style, {
+      cursor: 'pointer', border: '1px solid rgba(255,255,255,0.16)',
+      background: 'rgba(255,255,255,0.08)', color: '#ddd', borderRadius: '6px',
+      padding: '6px 10px', fontSize: '12px', fontFamily: '"Microsoft YaHei", sans-serif',
+    });
+
+    const submitBtn = document.createElement('button');
+    submitBtn.type = 'button';
+    submitBtn.textContent = '开唱';
+    Object.assign(submitBtn.style, {
+      cursor: 'pointer', border: '0', background: '#ff9800', color: '#fff',
+      borderRadius: '6px', padding: '6px 10px', fontSize: '12px',
+      fontFamily: '"Microsoft YaHei", sans-serif',
+    });
+
+    const submit = () => {
+      const songTitle = input.value.trim().replace(/\s+/g, ' ');
+      if (!songTitle) {
+        error.textContent = '先告诉我要唱什么歌。';
+        input.focus();
+        return;
+      }
+      modal.close();
+      this.app._handleSingRequest(songTitle);
+    };
+
+    cancelBtn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); modal.close(); });
+    submitBtn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); submit(); });
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') { e.preventDefault(); submit(); }
+      if (e.key === 'Escape') { e.preventDefault(); modal.close(); }
+    });
+    keyHandler = (e) => {
+      if (e.key === 'Escape') modal.close();
+    };
+    document.addEventListener('keydown', keyHandler);
+
+    actions.appendChild(cancelBtn);
+    actions.appendChild(submitBtn);
+    modal.panel.appendChild(hint);
+    modal.panel.appendChild(input);
+    modal.panel.appendChild(error);
+    modal.panel.appendChild(actions);
+    requestAnimationFrame(() => input.focus());
   }
 
   _showSystemSub(anchor) {
@@ -744,7 +845,7 @@ class ToolBar {
       row.addEventListener('mousedown', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this._hideSubmenu();
+        this.hide();
         item.action();
       });
       menu.appendChild(row);
@@ -880,6 +981,8 @@ class DesktopPetApp {
     this._lastProactiveTypeAt = {};
     this._proactiveAiBusy = false;
     this._proactiveAiHistory = [];
+    this._singReturnTimer = null;
+    this._singSeq = 0;
     this._chatActiveUntil = 0;
     this._interactionMood = 'calm';
     this._interactionStreak = { type: null, count: 0, firstAt: 0, lastAt: 0 };
@@ -919,9 +1022,10 @@ class DesktopPetApp {
     this._edgeClimbStartedAt = 0;
     this._edgeClimbMaxUntil = 0;
     this._edgeClimbTopY = 0;
+    this._edgeTopDropActive = false;
     this._animationLoadSeq = 0;
-    this._opaqueTopCache = null;
-    this._opaqueTopCacheAt = 0;
+    this._opaqueBoundsCache = null;
+    this._opaqueBoundsCacheKey = '';
     this._toolbarActive = false;   // 工具栏或子菜单打开时禁止侧边隐藏/行走
     this._auxWindowActive = false;  // 聊天/设置窗口打开时禁止侧边隐藏/行走
     this._auxWindowTimer = null;    // 辅助窗口可见状态轮询
@@ -936,7 +1040,7 @@ class DesktopPetApp {
     this._chatterBusy = false;
     this._illCoughTimer = null;
     this._chatterTopicIndex = Math.floor(Math.random() * CHATTER_TOPICS.length);
-    this._chatterHistory = [];  // 话痨模式专用历史，用于防重复
+    this._chatterHistory = [];  // 自动AI互动模式专用历史，用于防重复
     this._musicActive = false;
     this._musicGraphType = null;
     this._musicAboveSince = 0;
@@ -1282,21 +1386,6 @@ class DesktopPetApp {
     return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
   }
 
-  _measureOpaqueCanvasTop() {
-    try {
-      const W = this.canvas.width;
-      const H = this.canvas.height;
-      const data = this.ctx.getImageData(0, 0, W, H).data;
-      for (let y = 0; y < H; y += 2) {
-        const row = y * W * 4;
-        for (let x = 0; x < W; x += 2) {
-          if (data[row + x * 4 + 3] > 24) return y;
-        }
-      }
-    } catch (_) {}
-    return null;
-  }
-
   _updateBubblePlacement() {
     const bubble = this._currentBubble;
     if (!bubble || !bubble.parentNode) return;
@@ -1588,6 +1677,7 @@ class DesktopPetApp {
     if (entry.type === 'pinch') return entry.streakCount >= 3 ? 'annoyed' : 'playful';
     if (entry.type === 'feed' || entry.type === 'drink') return 'satisfied';
     if (entry.type === 'chat') return 'companied';
+    if (entry.type === 'sing') return 'excited';
     if (entry.type === 'play') return 'excited';
     if (entry.type === 'drag') return 'startled';
     if (entry.type === 'work') return 'focused';
@@ -1778,7 +1868,7 @@ class DesktopPetApp {
   _interactionTypeLabel(type) {
     const labels = {
       touch: '触摸', pinch: '戳脸', drag: '拖拽', feed: '喂食', drink: '喝水',
-      play: '玩耍', work: '工作', chat: '聊天', music: '听到音乐', mischief: '捣蛋',
+      play: '玩耍', work: '工作', chat: '聊天', sing: '唱歌', music: '听到音乐', mischief: '捣蛋',
     };
     return labels[type] || type || '未知';
   }
@@ -1800,13 +1890,14 @@ class DesktopPetApp {
       drink: `主人给我喝：${context.label || context.foodName || '饮品'}；我该说什么？`,
       play: `我准备开始玩耍：${context.label || work.name || '玩耍'}；我该说什么？`,
       work: `我准备开始工作/学习：${context.label || context.workName || work.name || '工作'}；我该说什么？`,
+      sing: `主人想听我唱「${context.songTitle || context.label || '一首歌'}」。请写一段2到4句的中文原创可唱台词，像桌宠在即兴唱歌；可以包含啦啦啦、轻轻哼唱等拟声，但不要引用、续写或复现任何真实歌曲的歌词。`,
       music: `我听到音乐，准备跳舞；我该说什么？`,
       chatter: (() => {
         const recent = context.recentChatter;
         const recentNote = recent && recent.length
           ? `\n我最近说过：${recent.map(s => `"${s}"`).join('、')}。请务必说一句完全不同的内容，不要重复类似的措辞或意思。`
           : '';
-        return `我现在进入话痨模式，每隔一段时间主动和主人说一句话。当前话题：「${context.topic || '生活'}」。${recentNote}\n请发挥创意，说一句独特、自然、贴合话题的话，可以是诗意的描述、有趣的联想、对主人的鼓励或猫猫视角的感悟。`;
+        return `我现在进入自动AI互动模式，每30秒主动和主人说一句话。当前话题：「${context.topic || '生活'}」。${recentNote}\n请发挥创意，说一句独特、自然、贴合话题的话，可以是诗意的描述、有趣的联想、对主人的鼓励或猫猫视角的感悟。`;
       })(),
     }[context.type || 'idle'] || (context.reason || '我想主动和主人说一句话。');
 
@@ -1815,7 +1906,9 @@ class DesktopPetApp {
       `当前心情：${status.mood || this.mode || 'normal'}`,
       `状态：饱腹${Math.round(stats.hunger ?? 80)}，口渴${Math.round(stats.thirst ?? 80)}，心情${Math.round(stats.happiness ?? 80)}，体力${Math.round(stats.energy ?? 80)}`,
       `最近互动：${recent}`,
-      `输出要求：只输出桌宠第一人称的一句中文气泡台词，${PROACTIVE_SPEECH_MAX_CHARS}字以内；不要解释，不要加引号，不要说自己是AI。`,
+      context.type === 'sing'
+        ? `输出要求：只输出桌宠第一人称中文原创唱词，${SING_SPEECH_MAX_CHARS}字以内；不要解释，不要加引号，不要说自己是AI，不要复现真实歌曲歌词。`
+        : `输出要求：只输出桌宠第一人称的一句中文气泡台词，${PROACTIVE_SPEECH_MAX_CHARS}字以内；不要解释，不要加引号，不要说自己是AI。`,
     ].join('\n');
   }
 
@@ -1832,6 +1925,21 @@ class DesktopPetApp {
     if (sentence && sentence[1]) value = sentence[1];
     if (value.length > PROACTIVE_SPEECH_MAX_CHARS) {
       value = `${value.slice(0, PROACTIVE_SPEECH_MAX_CHARS - 1)}…`;
+    }
+    return value;
+  }
+
+  _normalizeSingSpeech(text) {
+    if (!text) return '';
+    let value = String(text)
+      .replace(/\r?\n+/g, ' ')
+      .replace(/^(回复|台词|气泡|桌宠|宠物|唱词|歌词)[:：]\s*/i, '')
+      .replace(/^["“'‘\s]+|["”'’\s]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!value) return '';
+    if (value.length > SING_SPEECH_MAX_CHARS) {
+      value = `${value.slice(0, SING_SPEECH_MAX_CHARS - 1)}…`;
     }
     return value;
   }
@@ -1877,21 +1985,29 @@ class DesktopPetApp {
         memorySummary,
       }).catch(() => '你是一只活泼、亲近主人的桌面宠物。');
       const petName = config.pet_name || '喵喵';
-      const prompt = `你的名字叫「${petName}」。\n${basePrompt}\n\n你现在只负责给桌宠生成主动气泡台词。台词要短、自然、可爱，贴合当前事件。`;
+      const taskPrompt = context.type === 'sing'
+        ? '你现在只负责给桌宠生成一小段原创唱词。唱词要短、自然、可爱，贴合主人点的歌名，但不要复现真实歌曲歌词。'
+        : '你现在只负责给桌宠生成主动气泡台词。台词要短、自然、可爱，贴合当前事件。';
+      const prompt = `你的名字叫「${petName}」。\n${basePrompt}\n\n${taskPrompt}`;
       const isChatterType = (context.type === 'chatter');
+      const isSingType = (context.type === 'sing');
       const tunedConfig = {
         ...config,
         temperature: isChatterType
           ? Math.max(0.85, Math.min(1.2, Number(config.temperature || 0.9)))
-          : Math.max(0.6, Math.min(1.0, Number(config.temperature || 0.8))),
+          : (isSingType
+            ? Math.max(0.8, Math.min(1.15, Number(config.temperature || 0.9)))
+            : Math.max(0.6, Math.min(1.0, Number(config.temperature || 0.8)))),
         max_tokens: isChatterType
           ? Math.min(Number(config.max_tokens || 120), 120)
-          : Math.min(Number(config.max_tokens || 80), 80),
+          : (isSingType
+            ? Math.min(Number(config.max_tokens || 160), 160)
+            : Math.min(Number(config.max_tokens || 80), 80)),
       };
-      // 话痨模式使用独立历史，避免和其他互动混淆造成重复
+      // 自动AI互动模式使用独立历史，避免和其他互动混淆造成重复
       const history = isChatterType
         ? this._chatterAiHistory ? this._chatterAiHistory.slice(-4) : []
-        : this._proactiveAiHistory.slice(-6);
+        : (isSingType ? [] : this._proactiveAiHistory.slice(-6));
       const newHistory = await invoke('chat_stream', {
         message: this._buildProactiveUserPrompt(context, status),
         config: tunedConfig,
@@ -1903,14 +2019,17 @@ class DesktopPetApp {
         if (isChatterType) {
           if (!this._chatterAiHistory) this._chatterAiHistory = [];
           this._chatterAiHistory = newHistory.slice(-6);
-        } else {
+        } else if (!isSingType) {
           this._proactiveAiHistory = newHistory.slice(-8);
         }
       }
       const assistant = Array.isArray(newHistory)
         ? [...newHistory].reverse().find((item) => item && item.role === 'assistant')
         : null;
-      const speech = this._normalizeProactiveSpeech(assistant?.content || '');
+      const rawSpeech = assistant?.content || '';
+      const speech = isSingType
+        ? this._normalizeSingSpeech(rawSpeech)
+        : this._normalizeProactiveSpeech(rawSpeech);
       return speech || fallback;
     } catch (e) {
       console.warn('主动 AI 发言失败:', e);
@@ -1971,7 +2090,11 @@ class DesktopPetApp {
     const now = performance.now();
     const dedupeMs = Number(options.dedupeMs ?? TTS_DEDUPE_WINDOW_MS);
     if (this._isSpeechBusy()) {
-      return false;
+      if (options.force) {
+        this._stopCurrentTts();
+      } else {
+        return false;
+      }
     }
     if (!options.force && normalized === this._ttsActiveText) {
       return false;
@@ -2092,7 +2215,7 @@ class DesktopPetApp {
   _resolveWalkGraphType(result) {
     if (!result) return null;
     const graphType = result.graphType || 'default';
-    if (graphType.startsWith('move.climb.') || graphType.startsWith('move.crawl.')) {
+    if (graphType.startsWith('move.climb.') || graphType.startsWith('move.crawl.') || graphType.startsWith('move.fall.')) {
       return this._edgeGraphCandidates(graphType, result)[0];
     }
     if (graphType.startsWith('move.walk.')) return this._walkGraphCandidates(graphType, result)[0];
@@ -2127,10 +2250,12 @@ class DesktopPetApp {
 
   _edgeGraphCandidates(graphType, result = {}) {
     const raw = String(graphType || '');
-    const match = raw.match(/^move\.(climb(?:\.top)?|crawl)\.(left|right)$/);
+    const match = raw.match(/^move\.(climb(?:\.top)?|crawl|fall)\.(left|right)$/);
+    const kind = match?.[1] || '';
     const side = match?.[2] || result.edgeSide || (result.facingRight === false ? 'left' : 'right');
     const candidates = [
       match ? raw : `move.climb.${side}`,
+      ...(kind === 'fall' ? [`move.fall.${side}`] : []),
       `move.climb.${side}`,
       `move.climb.top.${side}`,
       `move.crawl.${side}`,
@@ -2140,46 +2265,177 @@ class DesktopPetApp {
   }
 
   _screenBounds(screen, pos) {
-    const screenW = Math.max(0, Math.round(Number(screen?.workAreaWidth) || 0));
-    const screenH = Math.max(0, Math.round(Number(screen?.workAreaHeight) || 0));
+    const fallbackW = Number(screen?.screenWidth ?? screen?.workAreaWidth ?? screen?.width) || 0;
+    const fallbackH = Number(screen?.screenHeight ?? screen?.workAreaHeight ?? screen?.height) || 0;
+    const workWidth = Math.max(0, Math.round(Number(screen?.workAreaWidth) || fallbackW));
+    const workHeight = Math.max(0, Math.round(Number(screen?.workAreaHeight) || fallbackH));
+    const workLeft = Math.round(Number(screen?.workAreaX ?? screen?.screenX ?? 0) || 0);
+    const workTop = Math.round(Number(screen?.workAreaY ?? screen?.screenY ?? 0) || 0);
+    const workRight = workLeft + workWidth;
+    const workBottom = workTop + workHeight;
+    const screenBottom = Math.round(Number(screen?.screenY ?? 0) || 0) + Math.max(0, Math.round(Number(screen?.screenHeight) || fallbackH));
+    const hasWorkArea = Number.isFinite(Number(screen?.workAreaWidth))
+      && Number.isFinite(Number(screen?.workAreaHeight))
+      && (workBottom < screenBottom || workTop !== Math.round(Number(screen?.screenY ?? 0) || 0));
     const windowW = Math.max(0, Math.round(Number(pos?.width) || 0));
     const windowH = Math.max(0, Math.round(Number(pos?.height) || 0));
     return {
-      maxX: Math.max(0, screenW - windowW),
-      maxY: Math.max(0, screenH - windowH),
+      workLeft,
+      workTop,
+      workRight,
+      workBottom,
+      workWidth,
+      workHeight,
+      hasWorkArea,
+      minX: workLeft,
+      minY: workTop,
+      maxX: Math.max(workLeft, workRight - windowW),
+      maxY: Math.max(workTop, workBottom - windowH),
+      windowW,
+      windowH,
     };
   }
 
-  _visiblePetTopOffsetPx(windowHeightPx = null) {
-    const measuredTop = this._measureOpaqueCanvasTop();
-    const canvasH = Math.max(1, this.canvas.height || window.innerHeight || 0);
-    const physicalH = Math.max(1, Number(windowHeightPx) || canvasH);
-    const scale = physicalH / canvasH;
-    const fallbackTop = Math.max(0, canvasH - PET_BODY_VIEWPORT_SIZE);
-    const top = Number.isFinite(measuredTop) ? measuredTop : fallbackTop;
-    return Math.max(0, Math.round(top * scale));
+  _opaqueCanvasCacheKey() {
+    const player = this.player || {};
+    return [
+      this.canvas.width,
+      this.canvas.height,
+      this.graphType,
+      player.currentPhase,
+      player.currentIndex,
+      player.frontIndex,
+      player.foodIndex,
+    ].join('|');
   }
 
-  _refreshEdgeClimbTopY(pos) {
-    const offset = this._visiblePetTopOffsetPx(pos?.height);
-    const nextTopY = -offset;
+  _measureOpaqueCanvasBounds() {
+    const key = this._opaqueCanvasCacheKey();
+    if (this._opaqueBoundsCache && this._opaqueBoundsCacheKey === key) {
+      return this._opaqueBoundsCache;
+    }
+
+    try {
+      const W = this.canvas.width;
+      const H = this.canvas.height;
+      if (!W || !H) return null;
+      const data = this.ctx.getImageData(0, 0, W, H).data;
+      let left = W;
+      let top = H;
+      let right = -1;
+      let bottom = -1;
+
+      for (let y = 0; y < H; y++) {
+        const row = y * W * 4;
+        for (let x = 0; x < W; x++) {
+          if (data[row + x * 4 + 3] <= 24) continue;
+          if (x < left) left = x;
+          if (x > right) right = x;
+          if (y < top) top = y;
+          if (y > bottom) bottom = y;
+        }
+      }
+
+      if (right < left || bottom < top) return null;
+      const bounds = {
+        left,
+        top,
+        right: right + 1,
+        bottom: bottom + 1,
+        width: right - left + 1,
+        height: bottom - top + 1,
+      };
+      this._opaqueBoundsCache = bounds;
+      this._opaqueBoundsCacheKey = key;
+      return bounds;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _visiblePetBoundsPx(pos = null) {
+    const canvasW = Math.max(1, this.canvas.width || window.innerWidth || 0);
+    const canvasH = Math.max(1, this.canvas.height || window.innerHeight || 0);
+    const physicalW = Math.max(1, Number(pos?.width) || canvasW);
+    const physicalH = Math.max(1, Number(pos?.height) || canvasH);
+    const measured = this._measureOpaqueCanvasBounds();
+    if (!measured) {
+      return { left: 0, top: 0, right: physicalW, bottom: physicalH, width: physicalW, height: physicalH };
+    }
+
+    const scaleX = physicalW / canvasW;
+    const scaleY = physicalH / canvasH;
+    const left = Math.max(0, Math.min(physicalW, Math.floor(measured.left * scaleX)));
+    const top = Math.max(0, Math.min(physicalH, Math.floor(measured.top * scaleY)));
+    const right = Math.max(left + 1, Math.min(physicalW, Math.ceil(measured.right * scaleX)));
+    const bottom = Math.max(top + 1, Math.min(physicalH, Math.ceil(measured.bottom * scaleY)));
+    return { left, top, right, bottom, width: right - left, height: bottom - top };
+  }
+
+  _measureOpaqueCanvasTop() {
+    const bounds = this._measureOpaqueCanvasBounds();
+    return bounds ? bounds.top : null;
+  }
+
+  _edgeWindowXForSide(side, bounds, visibleBounds) {
+    return side === 'right'
+      ? bounds.workRight - visibleBounds.right
+      : bounds.workLeft - visibleBounds.left;
+  }
+
+  _edgeWindowYForSide(side, bounds, visibleBounds) {
+    return side === 'bottom'
+      ? bounds.workBottom - visibleBounds.bottom
+      : bounds.workTop - visibleBounds.top;
+  }
+
+  _edgeFallBottomY(bounds, visibleBounds) {
+    const fallbackGap = bounds.hasWorkArea
+      ? 0
+      : Math.min(EDGE_FALL_BOTTOM_SAFE_GAP_PX, Math.max(0, bounds.workHeight - visibleBounds.height));
+    return bounds.workBottom - visibleBounds.bottom - fallbackGap;
+  }
+
+  _edgeTopDropTargetY(bounds, visibleBounds) {
+    const visibleTargetY = this._edgeFallBottomY(bounds, visibleBounds);
+    const fallbackGap = bounds.hasWorkArea
+      ? 0
+      : Math.min(EDGE_FALL_BOTTOM_SAFE_GAP_PX, Math.max(0, bounds.workHeight - bounds.windowH));
+    const maxWindowY = Math.max(bounds.minY, bounds.workBottom - bounds.windowH - fallbackGap);
+    return Math.min(visibleTargetY, maxWindowY);
+  }
+
+  _refreshEdgeClimbTopY(pos, bounds, visibleBounds) {
+    const nextTopY = this._edgeWindowYForSide('top', bounds, visibleBounds || this._visiblePetBoundsPx(pos));
     if (!Number.isFinite(nextTopY)) return;
-    this._edgeClimbTopY = Math.min(Math.round(Number(this._edgeClimbTopY) || 0), nextTopY);
+    this._edgeClimbTopY = Math.round(nextTopY);
   }
 
   _clampWindowTarget(x, y, bounds) {
     return {
-      x: Math.max(0, Math.min(bounds.maxX, Math.round(x))),
-      y: Math.max(0, Math.min(bounds.maxY, Math.round(y))),
+      x: Math.max(bounds.minX, Math.min(bounds.maxX, Math.round(x))),
+      y: Math.max(bounds.minY, Math.min(bounds.maxY, Math.round(y))),
     };
   }
 
-  _clampEdgeClimbTarget(x, y, bounds) {
-    const minY = Math.min(0, Math.round(Number(this._edgeClimbTopY) || 0));
-    return {
-      x: Math.max(0, Math.min(bounds.maxX, Math.round(x))),
-      y: Math.max(minY, Math.min(bounds.maxY, Math.round(y))),
+  _clampVisiblePetTarget(x, y, bounds, visibleBounds) {
+    const minX = bounds.workLeft - visibleBounds.left;
+    const maxX = bounds.workRight - visibleBounds.right;
+    const minY = bounds.workTop - visibleBounds.top;
+    const maxY = bounds.workBottom - visibleBounds.bottom;
+    const clampAxis = (value, min, max) => {
+      const rounded = Math.round(value);
+      if (max < min) return Math.round((min + max) / 2);
+      return Math.max(min, Math.min(max, rounded));
     };
+    return {
+      x: clampAxis(x, minX, maxX),
+      y: clampAxis(y, minY, maxY),
+    };
+  }
+
+  _clampEdgeClimbTarget(x, y, bounds, visibleBounds) {
+    return this._clampVisiblePetTarget(x, y, bounds, visibleBounds);
   }
 
   _clearEdgeClimbState(options = {}) {
@@ -2195,6 +2451,7 @@ class DesktopPetApp {
     this._edgeClimbStartedAt = 0;
     this._edgeClimbMaxUntil = 0;
     this._edgeClimbTopY = 0;
+    if (!options.keepTopDrop) this._edgeTopDropActive = false;
     this._walkRunGraphType = null;
     this._walkEndPending = false;
     this._walkPendingGraphType = null;
@@ -2205,10 +2462,141 @@ class DesktopPetApp {
     }
   }
 
+  async _interruptEdgeClimb(options = {}) {
+    const shouldDropFromTop = options.dropFromTop !== false
+      && this._edgeClimbActive
+      && this._edgeClimbStage === 'top'
+      && !this._edgeTopDropActive;
+
+    if (!shouldDropFromTop) {
+      this._clearEdgeClimbState(options);
+      return false;
+    }
+
+    const side = this._edgeClimbSide === 'right' ? 'right' : 'left';
+    const direction = this._edgeClimbTopDirection >= 0 ? 1 : -1;
+    const fallGraph = this._edgeGraphForStage('fall', side, direction);
+    this._edgeTopDropActive = true;
+
+    try {
+      const [pos, screen] = options.pos && options.screen
+        ? [options.pos, options.screen]
+        : await Promise.all([
+            invoke('get_window_position', {}),
+            invoke('get_screen_info', {}),
+          ]);
+
+      this._clearEdgeClimbState({
+        pauseMs: Math.max(Number(options.pauseMs) || 0, 2600),
+        keepTopDrop: true,
+      });
+      this._walkPauseUntil = performance.now() + 3200;
+
+      const candidates = [fallGraph, 'default'].map((graph) => this._resolveGraphType(graph));
+      const loadedGraph = await this._playAmbientGraphWithFallback(candidates, this.mode, {
+        force: true,
+        startPhase: 'b_loop',
+      });
+      if (loadedGraph) {
+        this._walkGraphType = loadedGraph;
+        this._edgeMoveGraphType = loadedGraph;
+      }
+
+      const landedPos = await this._moveEdgeTopDropToBottom(pos, screen);
+      await this._playEdgeTopDropLanding(loadedGraph || fallGraph, landedPos, screen);
+      return true;
+    } catch (_) {
+      this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+      return false;
+    } finally {
+      this._edgeTopDropActive = false;
+      this._edgeMoveGraphType = null;
+      this._walkRunGraphType = null;
+      this._walkEndPending = false;
+      this._walkPendingGraphType = null;
+      this._walkPauseUntil = performance.now() + 900;
+    }
+  }
+
+  async _moveEdgeTopDropToBottom(pos, screen) {
+    let current = { ...pos };
+    for (let i = 0; i < 96; i++) {
+      const bounds = this._screenBounds(screen, current);
+      const visibleBounds = this._visiblePetBoundsPx(current);
+      const y = Math.round(Number(current?.y) || 0);
+      const x = Math.round(Number(current?.x) || 0);
+      const bottomY = this._edgeTopDropTargetY(bounds, visibleBounds);
+      if (y >= bottomY) return current;
+
+      const target = this._clampWindowTarget(x, Math.min(bottomY, y + EDGE_FALL_STEP_PX), bounds);
+      await this._moveWindowTowardEdgeTarget(current, target).catch(() => {});
+      current = { ...current, x: target.x, y: target.y };
+      if (target.y >= bottomY) return current;
+      await new Promise((resolve) => setTimeout(resolve, EDGE_FALL_TICK_MS));
+    }
+    return current;
+  }
+
+  async _settleEdgeTopDropAboveBottom(pos, screen) {
+    if (!pos || !screen) return;
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    const bounds = this._screenBounds(screen, pos);
+    const visibleBounds = this._visiblePetBoundsPx(pos);
+    const targetY = this._edgeTopDropTargetY(bounds, visibleBounds);
+    const target = this._clampWindowTarget(pos.x, targetY, bounds);
+    await this._moveWindowTowardEdgeTarget(pos, target).catch(() => {});
+  }
+
+  async _playEdgeTopDropLanding(fallGraph, pos = null, screen = null) {
+    const mode = this.mode || 'normal';
+    const finish = () => {
+      this._walkGraphType = 'default';
+      this.playAnimation('default', mode, null, { ambient: true, force: true }).catch(() => {});
+    };
+
+    const resolvedFallGraph = this._resolveGraphType(fallGraph);
+    const hasFallEnd = this.graphType === resolvedFallGraph && this.player?.phases?.c_end?.length > 0;
+    if (hasFallEnd) {
+      await this._settleEdgeTopDropAboveBottom(pos, screen);
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 2400);
+        this.player.triggerEnd(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+      finish();
+      return;
+    }
+
+    await new Promise(async (resolve) => {
+      const timer = setTimeout(() => resolve(false), 2600);
+      const loaded = await this.playAnimation('raise', mode, () => {
+        clearTimeout(timer);
+        resolve(true);
+      }, {
+        force: true,
+        startPhase: 'c_end',
+        lockDurationMs: 2400,
+      });
+      if (!loaded) {
+        clearTimeout(timer);
+        resolve(false);
+        return;
+      }
+      await this._settleEdgeTopDropAboveBottom(pos, screen);
+    });
+
+    finish();
+  }
+
   _edgeGraphForStage(stage, side, direction) {
     const safeSide = side === 'right' ? 'right' : 'left';
     if (stage === 'top') {
       return direction >= 0 ? 'move.climb.top.right' : 'move.climb.top.left';
+    }
+    if (stage === 'fall') {
+      return direction >= 0 ? 'move.fall.right' : 'move.fall.left';
     }
     if (stage === 'bottom') {
       return direction >= 0 ? 'move.crawl.right' : 'move.crawl.left';
@@ -2242,9 +2630,10 @@ class DesktopPetApp {
 
   async _startEdgeClimb(result, pos, screen) {
     const bounds = this._screenBounds(screen, pos);
+    const visibleBounds = this._visiblePetBoundsPx(pos);
     const hitSide = result.edgeSide === 'right' ? 'right' : 'left';
-    const edgeX = hitSide === 'right' ? bounds.maxX : 0;
-    const target = this._clampWindowTarget(edgeX, pos.y, bounds);
+    const edgeX = this._edgeWindowXForSide(hitSide, bounds, visibleBounds);
+    const target = this._clampVisiblePetTarget(edgeX, pos.y, bounds, visibleBounds);
 
     await this._moveWindowTowardEdgeTarget(pos, target).catch(() => {});
 
@@ -2256,7 +2645,7 @@ class DesktopPetApp {
     this._edgeClimbBottomDirection = hitSide === 'left' ? -1 : 1;
     this._edgeClimbStartedAt = performance.now();
     this._edgeClimbMaxUntil = this._edgeClimbStartedAt + EDGE_CLIMB_MAX_MS;
-    this._edgeClimbTopY = -this._visiblePetTopOffsetPx(pos?.height);
+    this._edgeClimbTopY = this._edgeWindowYForSide('top', bounds, visibleBounds);
     this._edgeMoveUntil = 0;
     this._edgeMoveDy = 0;
     this._walkPauseUntil = this._edgeClimbMaxUntil;
@@ -2270,14 +2659,21 @@ class DesktopPetApp {
     if (!this._edgeClimbActive) return false;
     const now = performance.now();
     if (now > this._edgeClimbMaxUntil) {
-      this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+      await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true, pos, screen });
       return false;
     }
 
     const bounds = this._screenBounds(screen, pos);
+    const visibleBounds = this._visiblePetBoundsPx(pos);
     const step = EDGE_CLIMB_STEP_PX;
-    this._refreshEdgeClimbTopY(pos);
-    const topY = Math.round(Number(this._edgeClimbTopY) || 0);
+    this._refreshEdgeClimbTopY(pos, bounds, visibleBounds);
+    const edgeTopY = Number(this._edgeClimbTopY);
+    const topY = Number.isFinite(edgeTopY)
+      ? Math.round(edgeTopY)
+      : this._edgeWindowYForSide('top', bounds, visibleBounds);
+    const bottomY = this._edgeWindowYForSide('bottom', bounds, visibleBounds);
+    const leftX = this._edgeWindowXForSide('left', bounds, visibleBounds);
+    const rightX = this._edgeWindowXForSide('right', bounds, visibleBounds);
     const x = Math.round(Number(pos?.x) || 0);
     const y = Math.round(Number(pos?.y) || 0);
     let stage = this._edgeClimbStage;
@@ -2286,8 +2682,8 @@ class DesktopPetApp {
     let graphType = null;
 
     if (stage === 'side-up') {
-      const edgeX = side === 'right' ? bounds.maxX : 0;
-      target = this._clampEdgeClimbTarget(edgeX, y - step, bounds);
+      const edgeX = side === 'right' ? rightX : leftX;
+      target = this._clampEdgeClimbTarget(edgeX, y - step, bounds, visibleBounds);
       graphType = this._edgeGraphForStage(stage, side, -1);
       if (target.y <= topY) {
         stage = 'top';
@@ -2296,29 +2692,38 @@ class DesktopPetApp {
       }
     } else if (stage === 'top') {
       const dir = this._edgeClimbTopDirection >= 0 ? 1 : -1;
-      target = this._clampEdgeClimbTarget(x + dir * step, topY, bounds);
+      target = this._clampEdgeClimbTarget(x + dir * step, topY, bounds, visibleBounds);
       graphType = this._edgeGraphForStage(stage, side, dir);
-      if ((dir > 0 && target.x >= bounds.maxX) || (dir < 0 && target.x <= 0)) {
+      if ((dir > 0 && target.x >= rightX) || (dir < 0 && target.x <= leftX)) {
         side = dir > 0 ? 'right' : 'left';
         this._edgeClimbSide = side;
         stage = 'side-down';
         this._edgeClimbStage = stage;
         graphType = this._edgeGraphForStage(stage, side, 1);
       }
+    } else if (stage === 'fall') {
+      const dir = this._edgeClimbTopDirection >= 0 ? 1 : -1;
+      target = this._clampEdgeClimbTarget(x, Math.min(bottomY, y + EDGE_FALL_STEP_PX), bounds, visibleBounds);
+      graphType = this._edgeGraphForStage(stage, side, dir);
+      if (target.y >= bottomY) {
+        await this._moveWindowTowardEdgeTarget(pos, target).catch(() => {});
+        this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+        return false;
+      }
     } else if (stage === 'side-down') {
-      const edgeX = side === 'right' ? bounds.maxX : 0;
-      target = this._clampEdgeClimbTarget(edgeX, y + step, bounds);
+      const edgeX = side === 'right' ? rightX : leftX;
+      target = this._clampEdgeClimbTarget(edgeX, y + step, bounds, visibleBounds);
       graphType = this._edgeGraphForStage(stage, side, 1);
-      if (target.y >= bounds.maxY) {
+      if (target.y >= bottomY) {
         stage = 'bottom';
         this._edgeClimbStage = stage;
         graphType = this._edgeGraphForStage(stage, side, this._edgeClimbBottomDirection);
       }
     } else if (stage === 'bottom') {
       const dir = this._edgeClimbBottomDirection >= 0 ? 1 : -1;
-      target = this._clampWindowTarget(x + dir * step, bounds.maxY, bounds);
+      target = this._clampEdgeClimbTarget(x + dir * step, bottomY, bounds, visibleBounds);
       graphType = this._edgeGraphForStage(stage, side, dir);
-      const done = (dir > 0 && target.x >= bounds.maxX) || (dir < 0 && target.x <= 0);
+      const done = (dir > 0 && target.x >= rightX) || (dir < 0 && target.x <= leftX);
       if (done) {
         await this._moveWindowTowardEdgeTarget(pos, target).catch(() => {});
         this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
@@ -2562,11 +2967,12 @@ class DesktopPetApp {
       borderRadius: '12px',
       fontSize: '12px',
       fontFamily: 'sans-serif',
-      maxWidth: `${PET_BODY_VIEWPORT_SIZE - 24}px`,
+      maxWidth: `${PET_BODY_VIEWPORT_SIZE - 12}px`,
       maxHeight: `${PET_BUBBLE_MAX_HEIGHT}px`,
-      overflow: 'hidden',
+      overflow: 'visible',
       whiteSpace: 'pre-wrap',
       wordBreak: 'break-word',
+      overflowWrap: 'anywhere',
       lineHeight: '1.45',
       textAlign: 'left',
       zIndex: '150',
@@ -3284,6 +3690,84 @@ class DesktopPetApp {
     } catch(e) { this.showBubble(type === 'drink' ? '喝不了...' : '吃不了...', 2000); }
   }
 
+  _fallbackSingSpeech(songTitle) {
+    const title = songTitle || '这首歌';
+    return `啦啦啦~我把《${title}》唱成小小旋律，轻轻送到主人耳边。`;
+  }
+
+  async _handleSingRequest(songTitle) {
+    const title = String(songTitle || '').trim().replace(/\s+/g, ' ');
+    if (!title) {
+      this.showBubble('那下次再唱给你听~', 2000);
+      return;
+    }
+
+    const seq = ++this._singSeq;
+    const baseMood = this.mode || 'normal';
+    const fallback = this._fallbackSingSpeech(title);
+    const graph = this._pickMusicGraph('happy') || this._pickAmbientGraph(['say', 'idle_happy_like520', 'playone', 'stateone', 'think'], 'default');
+    const playMode = this._hasPlayableFrames(graph, 'happy') ? 'happy' : baseMood;
+
+    this._stopCurrentTts();
+    this._recordInteraction('sing', { label: title, mood: 'happy', duration: SING_PERFORMANCE_LOCK_MS, suppressFeedback: true });
+    this._manualSleepMode = false;
+    this._walkPauseUntil = performance.now() + SING_PERFORMANCE_LOCK_MS;
+    this._walkGraphType = graph;
+    this._manualAnimLock = true;
+    if (this._manualAnimTimer) clearTimeout(this._manualAnimTimer);
+    if (this._singReturnTimer) {
+      clearTimeout(this._singReturnTimer);
+      this._singReturnTimer = null;
+    }
+    this._manualAnimTimer = setTimeout(() => {
+      if (seq !== this._singSeq) return;
+      this._manualAnimLock = false;
+      this._manualAnimTimer = null;
+    }, SING_PERFORMANCE_LOCK_MS);
+
+    this.showBubble(`清清嗓子，给你唱《${title}》~`, 2200);
+    this.playAnimation(graph, playMode, null, {
+      force: true,
+      startPhase: 'b_loop',
+      lockDurationMs: SING_PERFORMANCE_LOCK_MS,
+      requirePlayableFrames: true,
+    }).catch(() => {});
+
+    this._startThinkingDots();
+    let speech = fallback;
+    try {
+      speech = await this._resolveProactiveSpeech({ type: 'sing', songTitle: title, label: title }, {
+        fallback,
+        force: true,
+        forceType: true,
+        minIntervalMs: 0,
+        typeMinIntervalMs: 0,
+        allowToolbarActive: true,
+        allowAuxWindowActive: true,
+        allowChatActive: true,
+      }) || fallback;
+    } catch (e) {
+      console.warn('唱歌生成失败:', e);
+      speech = fallback;
+    } finally {
+      this._stopThinkingDots();
+    }
+
+    if (seq !== this._singSeq) return;
+    this._markProactiveAi('sing');
+    const bubbleDuration = Math.max(4200, Math.min(SING_PERFORMANCE_LOCK_MS, speech.length * 120));
+    this.showBubble(speech, bubbleDuration);
+    await this._ttsSpeak(speech, { force: true, dedupeMs: 0 }).catch(() => false);
+
+    if (seq !== this._singSeq) return;
+    const returnDelay = Math.max(3200, Math.min(SING_PERFORMANCE_LOCK_MS, speech.length * 150 + 1200));
+    this._singReturnTimer = setTimeout(() => {
+      if (seq !== this._singSeq) return;
+      this._singReturnTimer = null;
+      this._returnToBaseState(baseMood, { ambient: true });
+    }, returnDelay);
+  }
+
   async _handlePlay(playType = null) {
     this._recordInteraction('play', { label: playType || 'menu-play', duration: 1600, suppressFeedback: true });
     try {
@@ -3451,22 +3935,22 @@ class DesktopPetApp {
   // ── 自主行走 ──
 
   async _walkTick() {
-    if (this._walkTickBusy) return;
+    if (this._walkTickBusy || this._edgeTopDropActive) return;
     if (this._dragging || this._manualSleepMode || this._manualAnimLock) {
-      if (this._edgeClimbActive) this._clearEdgeClimbState({ pauseMs: 900 });
+      if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, dropFromTop: false });
       return;
     }
     if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) {
-      if (this._edgeClimbActive) this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+      if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
       return;
     }
     if (performance.now() < this._chatActiveUntil) {
-      if (this._edgeClimbActive) this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+      if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
       return;
     }
     // 聊天进行中不移动
     if (this.chatUI && this.chatUI._isSending) {
-      if (this._edgeClimbActive) this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+      if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
       return;
     }
 
@@ -3479,24 +3963,24 @@ class DesktopPetApp {
           invoke('get_screen_info', {}),
         ]);
         if (this._dragging || this._manualSleepMode || this._manualAnimLock) {
-          this._clearEdgeClimbState({ pauseMs: 900 });
+          await this._interruptEdgeClimb({ pauseMs: 900, dropFromTop: false, pos, screen });
           return;
         }
         if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) {
-          this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+          await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true, pos, screen });
           return;
         }
         if (performance.now() < this._chatActiveUntil) {
-          this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+          await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true, pos, screen });
           return;
         }
         if (this.chatUI && this.chatUI._isSending) {
-          this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+          await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true, pos, screen });
           return;
         }
         await this._advanceEdgeClimb(pos, screen);
       } catch (_) {
-        this._clearEdgeClimbState({ pauseMs: 900, playDefault: true });
+        await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
       } finally {
         this._walkTickBusy = false;
       }
@@ -3546,14 +4030,16 @@ class DesktopPetApp {
       if (performance.now() < this._chatActiveUntil) return;
       if (this.chatUI && this.chatUI._isSending) return;
 
+      const bounds = this._screenBounds(screen, pos);
+      const visibleBounds = this._visiblePetBoundsPx(pos);
       const result = await invoke('walk_tick', {
         dtSeconds,
-        windowX: pos.x,
-        windowY: pos.y,
-        windowW: pos.width,
-        windowH: pos.height,
-        screenW: Math.round(screen.workAreaWidth),
-        screenH: Math.round(screen.workAreaHeight),
+        windowX: Math.round(Number(pos.x) || 0) + visibleBounds.left - bounds.workLeft,
+        windowY: Math.round(Number(pos.y) || 0) + visibleBounds.top - bounds.workTop,
+        windowW: Math.max(1, Math.round(visibleBounds.width)),
+        windowH: Math.max(1, Math.round(visibleBounds.height)),
+        screenW: Math.max(1, Math.round(bounds.workWidth)),
+        screenH: Math.max(1, Math.round(bounds.workHeight)),
       });
 
       if (this._dragging || this._manualSleepMode || this._manualAnimLock) return;

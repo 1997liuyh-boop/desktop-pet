@@ -52,7 +52,17 @@
       case 'get_system_audio_level':
         return 0;
       case 'get_screen_info':
-        return { workAreaWidth: window.innerWidth || 500, workAreaHeight: window.innerHeight || 500, scaleFactor: window.devicePixelRatio || 1 };
+        return {
+          screenX: 0,
+          screenY: 0,
+          screenWidth: window.innerWidth || 500,
+          screenHeight: window.innerHeight || 500,
+          workAreaX: 0,
+          workAreaY: 0,
+          workAreaWidth: window.innerWidth || 500,
+          workAreaHeight: window.innerHeight || 500,
+          scaleFactor: window.devicePixelRatio || 1,
+        };
       case 'get_window_position':
         return { x: 0, y: 0, width: window.innerWidth || 500, height: window.innerHeight || 500 };
       case 'get_cursor_position':

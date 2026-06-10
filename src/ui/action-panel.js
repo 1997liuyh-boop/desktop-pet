@@ -53,7 +53,8 @@ class ActionPanel {
     this.contentEl.addEventListener('click', (e) => {
       const itemBtn = e.target.closest('[data-item-id]');
       if (itemBtn) {
-        if (this.onUseItem) this.onUseItem(itemBtn.dataset.itemId);
+        const used = this.onUseItem ? this.onUseItem(itemBtn.dataset.itemId) : false;
+        if (used) this.collapse();
         this.refresh();
         return;
       }
@@ -61,9 +62,17 @@ class ActionPanel {
       const btn = e.target.closest('[data-action]');
       if (!btn) return;
       const action = btn.dataset.action;
-      if (this.actions[action]) this.actions[action]();
+      const handled = this.actions[action] ? this.actions[action]() : false;
+      const meta = getActionMeta(action);
+      if (handled && meta?.kind !== 'panel') this.collapse();
       this.refresh();
     });
+  }
+
+  collapse() {
+    this.isExpanded = false;
+    this.el.className = 'collapsed';
+    saveToStorage('desktop-pet-action-panel-open', this.isExpanded);
   }
 
   refresh() {

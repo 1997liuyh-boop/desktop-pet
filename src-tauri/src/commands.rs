@@ -509,12 +509,23 @@ pub fn read_png_frames_batch(
 
 #[tauri::command]
 pub fn get_screen_info(window: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
-    let monitor = window.primary_monitor().map_err(|e| e.to_string())?.ok_or("No monitor")?;
+    let monitor = match window.current_monitor().map_err(|e| e.to_string())? {
+        Some(monitor) => monitor,
+        None => window.primary_monitor().map_err(|e| e.to_string())?.ok_or("No monitor")?,
+    };
     let size = monitor.size();
+    let position = monitor.position();
+    let work_area = monitor.work_area();
     let scale = monitor.scale_factor();
     Ok(serde_json::json!({
-        "workAreaWidth": size.width,
-        "workAreaHeight": size.height,
+        "screenX": position.x,
+        "screenY": position.y,
+        "screenWidth": size.width,
+        "screenHeight": size.height,
+        "workAreaX": work_area.position.x,
+        "workAreaY": work_area.position.y,
+        "workAreaWidth": work_area.size.width,
+        "workAreaHeight": work_area.size.height,
         "scaleFactor": scale,
     }))
 }
