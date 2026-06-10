@@ -1,6 +1,13 @@
 // Settings page JS — 运行在独立设置窗口中
 const { invoke } = window.PetRuntime;
 
+const TTS_DEFAULT = {
+  endpoint: 'https://api.xiaomimimo.com/v1/chat/completions',
+  model: 'mimo-v2.5-tts-voicedesign',
+  voice: '16 岁少女感的可爱萝莉音，音色清亮甜美，声音轻盈、有亲近感，像活泼可爱的桌面伙伴在说话',
+  style: '语速偏轻快，情绪自然灵动，尾音柔和上扬，表达可爱但不过度夸张',
+};
+
 async function loadConfig() {
   try {
     // 加载 LLM 配置
@@ -28,10 +35,10 @@ async function loadConfig() {
 
     // 加载 TTS 配置
     const tts = await invoke('load_tts_config', {}).catch(() => ({}));
-    document.getElementById('ttsEndpoint').value = tts.endpoint || '';
-    document.getElementById('ttsModel').value = tts.model || '';
-    document.getElementById('ttsVoice').value = tts.voice || '';
-    document.getElementById('ttsStyle').value = tts.style || '';
+    document.getElementById('ttsEndpoint').value = tts.endpoint || TTS_DEFAULT.endpoint;
+    document.getElementById('ttsModel').value = tts.model || TTS_DEFAULT.model;
+    document.getElementById('ttsVoice').value = tts.voice || TTS_DEFAULT.voice;
+    document.getElementById('ttsStyle').value = tts.style || TTS_DEFAULT.style;
 
     const hasTtsKey = await invoke('has_tts_api_key', {}).catch(() => false);
     document.getElementById('ttsApiKey').placeholder = hasTtsKey ? '已配置（重新输入可更新）' : '留空则不启用语音合成';

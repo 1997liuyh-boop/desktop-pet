@@ -1709,6 +1709,7 @@ pub struct TtsConfig {
     pub endpoint: String,
     #[serde(default = "tts_default_model")]
     pub model: String,
+    /// In voicedesign mode this stores the voice prompt; in preset mode it stores the Voice ID.
     #[serde(default = "tts_default_voice")]
     pub voice: String,
     #[serde(default = "tts_default_style")]
@@ -1716,9 +1717,33 @@ pub struct TtsConfig {
 }
 
 fn tts_default_endpoint() -> String { "https://api.xiaomimimo.com/v1/chat/completions".into() }
-fn tts_default_model()    -> String { "mimo-v2.5-tts".into() }
-fn tts_default_voice()    -> String { "冰糖".into() }
-fn tts_default_style()    -> String { "可爱萝莉音，情绪随文本起伏，语调轻快，尾音上扬".into() }
+fn tts_default_model()    -> String { "mimo-v2.5-tts-voicedesign".into() }
+fn tts_default_voice()    -> String { "16 岁少女感的可爱萝莉音，音色清亮甜美，声音轻盈、有亲近感，像活泼可爱的桌面伙伴在说话".into() }
+fn tts_default_style()    -> String { "语速偏轻快，情绪自然灵动，尾音柔和上扬，表达可爱但不过度夸张".into() }
+
+fn normalize_tts_config(mut config: TtsConfig) -> TtsConfig {
+    config.endpoint = if config.endpoint.trim().is_empty() {
+        tts_default_endpoint()
+    } else {
+        config.endpoint.trim().to_string()
+    };
+    config.model = if config.model.trim().is_empty() {
+        tts_default_model()
+    } else {
+        config.model.trim().to_string()
+    };
+    config.voice = if config.voice.trim().is_empty() {
+        tts_default_voice()
+    } else {
+        config.voice.trim().to_string()
+    };
+    config.style = if config.style.trim().is_empty() {
+        tts_default_style()
+    } else {
+        config.style.trim().to_string()
+    };
+    config
+}
 
 impl Default for TtsConfig {
     fn default() -> Self {
@@ -1733,6 +1758,7 @@ impl Default for TtsConfig {
 
 #[tauri::command]
 pub fn save_tts_config(app: tauri::AppHandle, config: TtsConfig) -> Result<(), String> {
+    let config = normalize_tts_config(config);
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     fs::write(data_dir(&app)?.join("tts-config.json"), json).map_err(|e| e.to_string())
 }
@@ -1742,7 +1768,8 @@ pub fn load_tts_config(app: tauri::AppHandle) -> Result<TtsConfig, String> {
     let path = data_dir(&app)?.join("tts-config.json");
     if !path.exists() { return Ok(TtsConfig::default()); }
     let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&content).map_err(|e| e.to_string())
+    let config = serde_json::from_str::<TtsConfig>(&content).map_err(|e| e.to_string())?;
+    Ok(normalize_tts_config(config))
 }
 
 /// Save the TTS API key separately from tts-config.json.
@@ -1784,24 +1811,33 @@ pub async fn tts_speak(app: tauri::AppHandle, text: String) -> Result<String, St
         }
     };
 
-    let default_style = tts_default_style();
-    let style = cfg.style.trim();
-    let style_prompt = if style.is_empty() {
-        default_style
-    } else if style.contains("可爱萝莉音") {
-        style.to_string()
+    let cfg = normalize_tts_config(cfg);
+    let synthesis_text = text.trim();
+    if synthesis_text.is_empty() {
+        return Err("TTS 文本为空".into());
+    }
+
+    let is_voice_design = cfg.model.trim() == "mimo-v2.5-tts-voicedesign";
+    let assistant_content = synthesis_text.to_string();
+    let user_content = if is_voice_design {
+        format!("音色设定：{}\n演绎风格：{}", cfg.voice.trim(), cfg.style.trim())
     } else {
-        format!("{}；{}", style, default_style)
+        cfg.style.trim().to_string()
     };
-    let assistant_content = format!("[自然]{}", text.trim());
+
+    let audio = if is_voice_design {
+        serde_json::json!({ "format": "wav", "optimize_text_preview": false })
+    } else {
+        serde_json::json!({ "format": "wav", "voice": cfg.voice })
+    };
 
     let body = serde_json::json!({
         "model": cfg.model,
         "messages": [
-            { "role": "assistant", "content": assistant_content },
-            { "role": "user", "content": style_prompt }
+            { "role": "user", "content": user_content },
+            { "role": "assistant", "content": assistant_content }
         ],
-        "audio": { "format": "wav", "voice": cfg.voice }
+        "audio": audio
     });
 
     let client = reqwest::Client::new();

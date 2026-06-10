@@ -103,6 +103,25 @@
         return null;
       case 'has_llm_api_key':
         return !!storage.get('pet-llm-api-key', '');
+      case 'load_tts_config':
+        return storage.get('pet-tts-config', {
+          endpoint: 'https://api.xiaomimimo.com/v1/chat/completions',
+          model: 'mimo-v2.5-tts-voicedesign',
+          voice: '16 岁少女感的可爱萝莉音，音色清亮甜美，声音轻盈、有亲近感，像活泼可爱的桌面伙伴在说话',
+          style: '语速偏轻快，情绪自然灵动，尾音柔和上扬，表达可爱但不过度夸张',
+        });
+      case 'save_tts_config':
+        storage.set('pet-tts-config', args.config || {});
+        return null;
+      case 'save_tts_api_key':
+        if (args.apiKey || args.api_key) {
+          storage.set('pet-tts-api-key', args.apiKey || args.api_key);
+        }
+        return null;
+      case 'has_tts_api_key':
+        return !!storage.get('pet-tts-api-key', '');
+      case 'tts_speak':
+        return '';
       case 'get_persona_presets':
         return [
           { name: '默认', description: '温柔活泼', temperature: 0.8 },
