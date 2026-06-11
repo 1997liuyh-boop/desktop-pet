@@ -66,6 +66,7 @@ class DesktopPetApp {
 
     this.workSystem = new WorkSystem(this.core, this.petLogic);
     this.inventory = new InventorySystem();
+    this.codingMonitor = new CodingToolMonitor();
     this.actionHandlers = this._createActionHandlers();
 
     this.toolbar = new Toolbar(this.core, this.actionHandlers);
@@ -98,6 +99,9 @@ class DesktopPetApp {
     console.log('预加载动画帧...');
     await this.graphCore.preloadCommon();
     console.log('动画预加载完成');
+
+    // 初始化 Coding Tool 监控
+    this._setupCodingMonitor();
 
     // 播放入场动画
     this.core.currentGraphType = 'startup';
@@ -186,6 +190,11 @@ class DesktopPetApp {
       return this._runLegacyAction(action.legacyAction);
     }
 
+    if (action.kind === 'monitor') {
+      this._toggleMonitorPanel();
+      return true;
+    }
+
     return false;
   }
 
@@ -261,6 +270,56 @@ class DesktopPetApp {
   _loadBehaviorSettings() {
     const behavior = loadFromStorage('pet-behavior-settings', { sideHide: true, proactive: true });
     if (!behavior.sideHide) this.sideHide.disable();
+  }
+
+  _setupCodingMonitor() {
+    const monitor = this.codingMonitor;
+
+    // 任务完成回调：气泡 + TTS
+    monitor.onTaskComplete((toolName, toolId, message) => {
+      this.messageBar.say(message);
+      this.petLogic.say(message);
+      this.core.addEvent(`${toolName} 任务完成`);
+
+      // 尝试 TTS 语音播报
+      this._tryTTS(message);
+    });
+
+    // 工作状态变化回调：进入/退出工作状态
+    monitor.onWorkStateChange((isWorking) => {
+      if (isWorking) {
+        // 有 coding 工具正在工作 → 宠物进入文案工作状态
+        if (this.core.state === PetState.IDLE || this.core.state === PetState.WALK) {
+          const workMeta = getActionMeta('work.copywriting') || {
+            id: 'work.copywriting',
+            animation: { graphTypes: ['workone', 'work', 'idle'] },
+          };
+          this.petLogic.startWork('monitor_coding', workMeta);
+          this.messageBar.say('检测到主人在用 coding 工具，我也来帮忙喵~');
+        }
+      } else {
+        // 所有 coding 工具都不在工作了 → 退出工作状态，进入闲游
+        if (this.core.state === PetState.WORK && this.core.activity === 'monitor_coding') {
+          this.petLogic.stopWork();
+          this.core.startWalking();
+          this.messageBar.say('工作完成啦，出去逛逛喵~');
+        }
+      }
+    });
+
+    // 启动监控
+    monitor.start();
+    console.log('[CodingToolMonitor] 已启动');
+  }
+
+  async _tryTTS(text) {
+    try {
+      if (window.PetRuntime && typeof window.PetRuntime.invoke === 'function') {
+        await window.PetRuntime.invoke('tts_speak', { text, sing: false });
+      }
+    } catch (_) {
+      // TTS 未配置或失败，静默忽略
+    }
   }
 
   _setupEventListeners() {
@@ -471,6 +530,81 @@ class DesktopPetApp {
     else if (core.x > core.LOGIC_W - margin) { this.controller.moveWindow(3, 0); core.x -= 10; }
     if (core.y < margin + 100) { this.controller.moveWindow(0, -3); core.y += 10; }
     else if (core.y > core.LOGIC_H - margin) { this.controller.moveWindow(0, 3); core.y -= 10; }
+  }
+
+  _toggleMonitorPanel() {
+    const existing = document.getElementById('monitor-panel');
+    if (existing) {
+      existing.remove();
+      return;
+    }
+
+    const panel = document.createElement('div');
+    panel.id = 'monitor-panel';
+    panel.className = 'monitor-panel';
+
+    const tools = this.codingMonitor.tools;
+    const statusLabels = {
+      not_installed: '未安装',
+      not_running: '未启动',
+      idle: '已启动',
+      working: '任务进行中',
+      task_completed: '任务已完成',
+    };
+    const statusIcons = {
+      not_installed: '⬜',
+      not_running: '⬛',
+      idle: '🟢',
+      working: '🔄',
+      task_completed: '✅',
+    };
+
+    let html = '<div class="monitor-header"><span>📡</span> Coding 工具监控</div>';
+    html += '<div class="monitor-list">';
+    for (const tool of tools) {
+      const statusKey = tool.status || 'not_installed';
+      html += `
+        <div class="monitor-item" data-tool="${tool.id}">
+          <div class="monitor-tool-icon">${tool.icon}</div>
+          <div class="monitor-tool-info">
+            <div class="monitor-tool-name">${tool.name}</div>
+            <div class="monitor-tool-status status-${statusKey}">${statusIcons[statusKey] || '⬜'} ${statusLabels[statusKey] || statusKey}</div>
+          </div>
+        </div>`;
+    }
+    html += '</div>';
+    html += `<div class="monitor-footer">${this.codingMonitor.statusText}</div>`;
+    panel.innerHTML = html;
+
+    this.container.appendChild(panel);
+
+    // 点击面板外关闭
+    const closeHandler = (e) => {
+      if (!panel.contains(e.target)) {
+        panel.remove();
+        document.removeEventListener('click', closeHandler);
+      }
+    };
+    setTimeout(() => document.addEventListener('click', closeHandler), 0);
+
+    // 定时刷新面板
+    const refreshInterval = setInterval(async () => {
+      if (!document.getElementById('monitor-panel')) {
+        clearInterval(refreshInterval);
+        return;
+      }
+      const freshTools = this.codingMonitor.tools;
+      const items = panel.querySelectorAll('.monitor-item');
+      items.forEach((item, i) => {
+        if (!freshTools[i]) return;
+        const statusEl = item.querySelector('.monitor-tool-status');
+        const statusKey = freshTools[i].status || 'not_installed';
+        statusEl.className = `monitor-tool-status status-${statusKey}`;
+        statusEl.textContent = `${statusIcons[statusKey] || '⬜'} ${statusLabels[statusKey] || statusKey}`;
+      });
+      const footer = panel.querySelector('.monitor-footer');
+      if (footer) footer.textContent = this.codingMonitor.statusText;
+    }, 3000);
   }
 }
 

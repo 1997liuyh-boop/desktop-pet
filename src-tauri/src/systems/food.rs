@@ -2,15 +2,22 @@ use serde::{Deserialize, Serialize};
 
 /// 食物类型 — 对标 VPet food.lps 的 type 字段
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FoodType {
-    /// 饮料 (graph#drink)
+    /// 正餐
+    Meal,
+    /// 零食
+    Snack,
+    /// 饮料
     Drink,
-    /// 零食/正餐 (graph#eat)
-    Food,
+    /// 功能性 (提神/应急)
+    Functional,
+    /// 药品
+    Drug,
 }
 
-/// 食物定义 — 1:1 复刻 VPet food.lps / moredrink.lps 的条目
-/// 字段对应 VPet: Exp / Strength / StrengthDrink / StrengthFood / Health / Feeling
+/// 食物定义 — 1:1 复刻 VPet food.lps / moredrink.lps / drug.lps 的条目
+/// 字段对应 VPet: Exp / Strength / StrengthDrink / StrengthFood / Health / Feeling / Likability
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Food {
     /// 名字 (同时是图片文件名: image/food/<name>.png)
@@ -29,10 +36,14 @@ pub struct Food {
     pub health: f64,
     /// 心情
     pub feeling: f64,
+    /// 好感度
+    pub likability: f64,
     /// 价格
     pub price: f64,
-    /// 动画图名 (eat / drink)
+    /// 动画图名 (eat / drink / medicine)
     pub graph: String,
+    /// 描述文案 (VPet 原版 desc)
+    pub desc: String,
 }
 
 impl Food {
@@ -42,38 +53,147 @@ impl Food {
     }
 }
 
-/// VPet food.lps + moredrink.lps 中的真实食物数据 (精选可吃/可喝条目, 1:1 复刻属性)
+/// 构造辅助 — 参数顺序与 lps 字段一致: Exp / Strength / StrengthDrink / StrengthFood / Health / Feeling / Likability / price
+#[allow(clippy::too_many_arguments)]
+fn food(
+    name: &str,
+    food_type: FoodType,
+    graph: &str,
+    exp: f64,
+    strength: f64,
+    strength_drink: f64,
+    strength_food: f64,
+    health: f64,
+    feeling: f64,
+    likability: f64,
+    price: f64,
+    desc: &str,
+) -> Food {
+    Food {
+        name: name.into(),
+        food_type,
+        exp,
+        strength,
+        strength_drink,
+        strength_food,
+        health,
+        feeling,
+        likability,
+        price,
+        graph: graph.into(),
+        desc: desc.into(),
+    }
+}
+
+/// VPet food.lps + moredrink.lps + drug.lps 的真实食物数据 (1:1 复刻, 仅保留本项目有图片资源的条目)
 pub fn all_foods() -> Vec<Food> {
+    use FoodType::*;
     vec![
-        // ===== 可吃 (graph#eat) =====
-        Food { name: "爆米花".into(), food_type: FoodType::Food, exp: 8.0, strength: 40.0, strength_drink: -5.0, strength_food: 30.0, health: -1.0, feeling: 25.0, price: 8.5, graph: "eat".into() },
-        Food { name: "冰激凌".into(), food_type: FoodType::Food, exp: 4.0, strength: 40.0, strength_drink: 5.0, strength_food: 24.0, health: -0.5, feeling: 50.0, price: 10.0, graph: "eat".into() },
-        Food { name: "瓜子".into(), food_type: FoodType::Food, exp: 4.0, strength: 30.0, strength_drink: -2.0, strength_food: 26.0, health: 0.0, feeling: 37.0, price: 8.5, graph: "eat".into() },
-        Food { name: "核桃仁".into(), food_type: FoodType::Food, exp: 32.0, strength: 20.0, strength_drink: -2.0, strength_food: 5.0, health: 5.0, feeling: 0.0, price: 12.0, graph: "eat".into() },
-        Food { name: "火腿肠".into(), food_type: FoodType::Food, exp: 4.0, strength: 40.0, strength_drink: 0.0, strength_food: 38.0, health: -0.5, feeling: 0.0, price: 9.0, graph: "eat".into() },
-        Food { name: "花生米".into(), food_type: FoodType::Food, exp: 4.0, strength: 20.0, strength_drink: -2.0, strength_food: 20.0, health: -0.5, feeling: 0.0, price: 4.5, graph: "eat".into() },
-        Food { name: "汉堡".into(), food_type: FoodType::Food, exp: 12.0, strength: 60.0, strength_drink: -10.0, strength_food: 70.0, health: -2.0, feeling: 30.0, price: 22.0, graph: "eat".into() },
-        Food { name: "红烧牛肉".into(), food_type: FoodType::Food, exp: 40.0, strength: 70.0, strength_drink: -10.0, strength_food: 85.0, health: 2.0, feeling: 40.0, price: 38.0, graph: "eat".into() },
-        Food { name: "番茄意面".into(), food_type: FoodType::Food, exp: 32.0, strength: 65.0, strength_drink: 5.0, strength_food: 80.0, health: 1.0, feeling: 35.0, price: 32.0, graph: "eat".into() },
-        Food { name: "白切鸡".into(), food_type: FoodType::Food, exp: 32.0, strength: 60.0, strength_drink: 5.0, strength_food: 75.0, health: 3.0, feeling: 30.0, price: 36.0, graph: "eat".into() },
-        // ===== 可喝 (graph#drink) =====
-        Food { name: "ab钙奶".into(), food_type: FoodType::Drink, exp: 4.0, strength: 10.0, strength_drink: 40.0, strength_food: 5.0, health: 1.0, feeling: 2.0, price: 7.5, graph: "drink".into() },
-        Food { name: "果汁".into(), food_type: FoodType::Drink, exp: 8.0, strength: 10.0, strength_drink: 40.0, strength_food: 4.0, health: 3.0, feeling: 7.0, price: 10.5, graph: "drink".into() },
-        Food { name: "可乐".into(), food_type: FoodType::Drink, exp: 4.0, strength: 10.0, strength_drink: 50.0, strength_food: 2.0, health: -1.0, feeling: 50.0, price: 9.0, graph: "drink".into() },
-        Food { name: "凉茶".into(), food_type: FoodType::Drink, exp: 20.0, strength: 10.0, strength_drink: 60.0, strength_food: 1.0, health: 5.0, feeling: 12.0, price: 16.5, graph: "drink".into() },
-        Food { name: "维他奶".into(), food_type: FoodType::Drink, exp: 8.0, strength: 15.0, strength_drink: 35.0, strength_food: 5.0, health: 1.0, feeling: 2.0, price: 8.0, graph: "drink".into() },
-        Food { name: "椰汁".into(), food_type: FoodType::Drink, exp: 8.0, strength: 15.0, strength_drink: 50.0, strength_food: 4.0, health: 2.0, feeling: 25.0, price: 11.5, graph: "drink".into() },
-        Food { name: "盐汽水".into(), food_type: FoodType::Drink, exp: 8.0, strength: 15.0, strength_drink: 40.0, strength_food: 3.0, health: -0.5, feeling: 37.0, price: 8.5, graph: "drink".into() },
-        Food { name: "茶".into(), food_type: FoodType::Drink, exp: 10.0, strength: 10.0, strength_drink: 100.0, strength_food: -1.0, health: 5.0, feeling: 25.0, price: 19.5, graph: "drink".into() },
-        Food { name: "纯牛奶".into(), food_type: FoodType::Drink, exp: 10.0, strength: 20.0, strength_drink: 70.0, strength_food: 20.0, health: 2.0, feeling: 30.0, price: 17.5, graph: "drink".into() },
-        Food { name: "奶茶".into(), food_type: FoodType::Drink, exp: 40.0, strength: 70.0, strength_drink: 65.0, strength_food: 20.0, health: -1.0, feeling: 25.0, price: 22.0, graph: "drink".into() },
-        // ===== 药品 (graph#medicine) — 1:1 复刻 VPet drug.lps =====
-        Food { name: "维生素C含片".into(), food_type: FoodType::Food, exp: 2.0, strength: 0.0, strength_drink: 0.0, strength_food: 0.0, health: 10.0, feeling: 2.0, price: 16.5, graph: "medicine".into() },
-        Food { name: "钙片".into(),       food_type: FoodType::Food, exp: 2.0, strength: 0.0, strength_drink: 0.0, strength_food: 0.0, health: 10.0, feeling: 0.0, price: 24.5, graph: "medicine".into() },
-        Food { name: "感冒灵颗粒".into(), food_type: FoodType::Food, exp: 4.0, strength: 0.0, strength_drink: 5.0, strength_food: 0.0, health: 20.0, feeling: 3.0, price: 46.5, graph: "medicine".into() },
-        Food { name: "布洛芬".into(),     food_type: FoodType::Food, exp: 8.0, strength: 5.0, strength_drink: 0.0, strength_food: 0.0, health: 35.0, feeling: 5.0, price: 116.0, graph: "medicine".into() },
-        Food { name: "阿司匹林".into(),   food_type: FoodType::Food, exp: 12.0, strength: 5.0, strength_drink: 0.0, strength_food: 0.0, health: 65.0, feeling: 8.0, price: 131.5, graph: "medicine".into() },
-        Food { name: "速效救心丸".into(), food_type: FoodType::Food, exp: 20.0, strength: 10.0, strength_drink: 0.0, strength_food: 0.0, health: 75.0, feeling: 10.0, price: 181.5, graph: "medicine".into() },
+        // ===== 饮料 (food.lps) =====
+        food("ab钙奶", Drink, "drink", 4.0, 10.0, 40.0, 5.0, 1.0, 2.0, 0.0, 7.5, "健康美味，经济实惠"),
+        food("果汁", Drink, "drink", 8.0, 10.0, 40.0, 4.0, 3.0, 7.0, 0.0, 10.5, "那个那个那个那个果汁分你一半"),
+        food("可乐", Drink, "drink", 4.0, 10.0, 50.0, 2.0, -1.0, 50.0, 0.0, 9.0, "蓝色那个在日用品区谢谢"),
+        food("凉茶", Drink, "drink", 20.0, 10.0, 60.0, 1.0, 5.0, 12.0, 0.0, 16.5, "怕上火，喝广东咖啡！"),
+        food("维他奶", Drink, "drink", 8.0, 15.0, 35.0, 5.0, 1.0, 2.0, 0.0, 8.0, "点止汽水咁简单"),
+        food("雷碧", Drink, "drink", 2.0, 5.0, 45.0, 3.0, -1.0, 37.0, 0.0, 7.0, "透心扬，心飞凉"),
+        food("盐汽水", Drink, "drink", 8.0, 15.0, 40.0, 3.0, -0.5, 37.0, 0.0, 8.5, "我一口盐汽水！"),
+        food("椰汁", Drink, "drink", 8.0, 15.0, 50.0, 4.0, 2.0, 25.0, 0.0, 11.5, "白白胖胖，曲线圆润，要喝不加香油的椰O牌椰汁"),
+        // ===== 饮料 (moredrink.lps) =====
+        food("茶", Drink, "drink", 10.0, 10.0, 100.0, -1.0, 5.0, 25.0, 0.0, 19.5, "中国正统传统饮料，消食解腻，饭后必备。"),
+        food("纯牛奶", Drink, "drink", 10.0, 20.0, 70.0, 20.0, 2.0, 30.0, 0.0, 17.5, "每天一杯奶，强壮好桌宠！"),
+        food("格瓦斯", Drink, "drink", 60.0, 20.0, 75.0, 25.0, 2.0, 10.0, 0.0, 26.0, "液体面包，在俄罗斯的传说中，斯拉夫勇士为了重新变得爷们，经常喝这玩意。"),
+        food("1L纯净水", Drink, "drink", 20.0, 10.0, 200.0, 0.0, 0.5, -15.0, 0.0, 25.5, "一般来说是这是多人份，你一个人吨完算你厉害…达成成就-多喝水"),
+        food("奶茶", Drink, "drink", 40.0, 70.0, 65.0, 20.0, -1.0, 25.0, 0.0, 22.0, "秋天的第一杯奶茶，少冰，七糖，加珍珠打包带走不要纸管谢谢。"),
+        food("啤酒", Drink, "drink", 20.0, 10.0, 75.0, 10.0, -2.0, 10.0, 0.0, 12.5, "也是液体面包，雪崩的时候,每一片雪花都在勇闯天涯。"),
+        food("威士忌", Drink, "drink", 393.0, 5.0, 55.0, 5.0, -4.0, 20.0, 0.0, 69.5, "哦，我亲爱的朋友，请容许我给你倒一杯威士忌加冰。哦不用谢我的老伙计，这是我应该的。"),
+        food("白酒", Drink, "drink", 622.0, 10.0, 55.0, 10.0, -3.0, 20.0, 0.0, 110.0, "哎意呀意呀意呀意呀~你~爱古梁~地窖1578"),
+        food("伏特加", Drink, "drink", 522.0, -5.0, 45.0, 5.0, -5.0, 50.0, 0.0, 90.0, "同志！伏特加！吨吨吨！同志！波波沙！哒哒哒！"),
+        food("鸡尾酒", Drink, "drink", 123.0, -5.0, 60.0, 5.0, -1.0, 20.0, 0.0, 27.5, "预调的鸡尾酒，看不到调酒师的花活了，酒味好像也淡了点。"),
+        food("矿泉水", Drink, "drink", 10.0, 0.0, 120.0, 0.0, 1.0, 5.0, 0.0, 16.0, "一饮矿泉水,方知海南人寿长。"),
+        food("苏打水", Drink, "drink", 10.0, 0.0, 110.0, 0.0, 1.0, 5.0, 0.0, 15.0, "怎么会有人喜欢喝碳酸氢钠的水溶液？"),
+        food("热白开", Drink, "drink", 10.0, 0.0, 125.0, 0.0, 0.5, 1.0, 0.0, 16.0, "白开水，更适合桌宠宝宝体质的饮用水。"),
+        food("电解质水", Drink, "drink", 25.0, 20.0, 120.0, 5.0, 4.0, 5.0, 0.0, 23.5, "含有适当浓度、适当比例的电解质、微量元素等，反正就是很健康！"),
+        food("蒸馏水", Drink, "drink", 10.0, 0.0, 140.0, 0.0, -0.5, 1.0, 0.0, 16.5, "最正宗的水，其实不合适长期饮用"),
+        // ===== 功能性 (food.lps) =====
+        food("咖啡饮料", Functional, "drink", 32.0, 80.0, 20.0, 3.0, -1.0, 0.0, 0.0, 12.0, "不小心倒在键盘上效果更好哦！"),
+        food("大鹏特饮", Functional, "drink", 48.0, 85.0, 20.0, 3.0, -1.0, 25.0, 0.0, 16.5, "困了累了，大鹏特饮"),
+        food("黄牛", Functional, "drink", 64.0, 85.0, 20.0, 3.0, -1.0, 25.0, 0.0, 19.0, "放心，喝他的饮料不是他出钱你出命"),
+        food("能量饮料", Functional, "drink", 112.0, 80.0, 20.0, 3.0, -5.0, 20.0, 0.0, 22.5, "能量饮料能够瞬间给予角色40点能量加成。使用时执行某些动作将会取消使用，有4秒使用时间。（以上都没有）"),
+        food("土力架", Functional, "eat", 4.0, 80.0, -10.0, 80.0, 0.0, 0.0, 0.0, 18.0, "横扫自己，做回饥饿"),
+        food("压缩饼干", Functional, "eat", 4.0, 60.0, -20.0, 100.0, 0.0, 0.0, 0.0, 19.0, "饼干.rar"),
+        food("地球", Functional, "eat", -60.0, -60.0, 75.0, 75.0, 0.0, 0.0, -1.0, 0.0, "没钱也能吃,可以用来拯救存档(饥饿/口渴不足), 没事别吃这个"),
+        // ===== 零食 (food.lps) =====
+        food("爆米花", Snack, "eat", 8.0, 40.0, -5.0, 30.0, -1.0, 25.0, 0.0, 8.5, "电影必备，吃不完也要买"),
+        food("冰激凌", Snack, "eat", 4.0, 40.0, 5.0, 24.0, -0.5, 50.0, 0.0, 10.0, "中国人免费领"),
+        food("瓜子", Snack, "eat", 4.0, 30.0, -2.0, 26.0, 0.0, 37.0, 0.0, 8.5, "嘎吱嘎吱嘎吱嘎吱嘎吱嘎吱嘎吱嘎吱"),
+        food("核桃仁", Snack, "eat", 32.0, 20.0, -2.0, 5.0, 5.0, 0.0, 0.0, 12.0, "这次不用自己带锤子了"),
+        food("火腿肠", Snack, "eat", 4.0, 40.0, 0.0, 38.0, -0.5, 0.0, 0.0, 9.0, "肉做的棒子"),
+        food("花生米", Snack, "eat", 4.0, 20.0, -2.0, 20.0, -0.5, 0.0, 0.0, 4.5, "但凡有一粒花生米。。。"),
+        food("戒指糖", Snack, "eat", 4.0, 20.0, -2.0, 10.0, -0.5, 0.0, 0.0, 2.5, "这不比那个不能吃的破石头有用多了"),
+        food("老冰棍", Snack, "eat", 8.0, 15.0, 15.0, 5.0, -0.5, 5.0, 0.0, 4.5, "厂家正在考虑与辐射4联动中"),
+        food("绿色心情", Snack, "eat", 4.0, 5.0, 15.0, 5.0, -0.5, 12.0, 0.0, 3.5, "几年前还是一块钱的呜呜呜"),
+        food("奶片", Snack, "eat", 8.0, 8.0, -2.0, 8.0, 0.0, 17.0, 0.0, 3.5, "希望你们永远不会知道这个药。。。"),
+        food("奶糖", Snack, "eat", 12.0, 8.0, -2.0, 15.0, 0.0, 37.0, 0.0, 6.5, "小白兔牌"),
+        food("牛板筋", Snack, "eat", 8.0, 10.0, -1.0, 8.0, -1.0, 25.0, 0.0, 3.5, "只要来一根，大家都是好兄弟"),
+        food("牛扎糖", Snack, "eat", 8.0, 10.0, -2.0, 8.0, 0.0, 37.0, 0.0, 5.0, "好甜，像你一样"),
+        food("泡泡糖", Snack, "eat", 12.0, 5.0, -1.0, 5.0, 0.0, 42.0, 0.0, 5.0, "就吹吧你"),
+        food("巧克力", Snack, "eat", 8.0, 30.0, -5.0, 38.0, 0.0, 37.0, 0.0, 11.0, "纵享丝滑"),
+        food("软糖", Snack, "eat", 8.0, 5.0, -2.0, 12.0, 0.0, 12.0, 0.0, 4.0, "come on baby~"),
+        food("薯片", Snack, "eat", 8.0, 10.0, -5.0, 28.0, 0.0, 12.0, 0.0, 6.5, "开趴必备"),
+        food("娃仔小馒头", Snack, "eat", 8.0, 15.0, 0.0, 12.0, 0.0, 25.0, 0.0, 5.5, "这是我们的宝贝~~"),
+        food("小布丁", Snack, "eat", 8.0, 10.0, 5.0, 10.0, 0.0, 12.0, 0.0, 4.5, "没关系，小小的也很好吃"),
+        food("雪饼", Snack, "eat", 8.0, 10.0, 5.0, 15.0, 0.0, 25.0, 0.0, 6.0, "小时候的一口吃不下"),
+        food("散射雪糕", Snack, "eat", 4.0, 10.0, 10.0, 20.0, 0.0, 25.0, 0.0, 7.0, "三倍的快乐"),
+        food("猪肉脯", Snack, "eat", 12.0, 40.0, 0.0, 48.0, 0.0, 37.0, 0.0, 14.5, "你感觉在吃牛皮。。"),
+        // ===== 正餐 (food.lps) =====
+        food("臭豆腐", Meal, "eat", 40.0, 100.0, 0.0, 55.0, 0.0, 12.0, 0.0, 23.0, "闻起来臭，吃起来也臭，就是越吃越香。"),
+        food("东坡肘子", Meal, "eat", 120.0, 100.0, 0.0, 85.0, 1.0, 75.0, 0.0, 46.0, "小知识：东坡肘子其实并非苏东坡之功，而是其妻子王弗的妙作"),
+        food("番茄意面", Meal, "eat", 80.0, 100.0, 0.0, 110.0, 1.0, 50.0, 0.0, 42.0, "只要不是巧克力酱什么都好说。。"),
+        food("红烧狮子头", Meal, "eat", 120.0, 120.0, 0.0, 90.0, 1.0, 75.0, 0.0, 48.0, "芋头西米露"),
+        food("红烧牛肉", Meal, "eat", 120.0, 140.0, 0.0, 130.0, 1.0, 75.0, 0.0, 56.0, "不是4块钱的，请放心"),
+        food("华夫饼", Meal, "eat", 56.0, 100.0, 0.0, 80.0, 0.0, 75.0, 0.0, 33.5, "蜜饼！小刻最爱！"),
+        food("鸡翅", Meal, "eat", 24.0, 100.0, 0.0, 75.0, 0.0, 50.0, 0.0, 25.5, "红烧翅膀~我喜欢吃~"),
+        food("煎西冷牛排", Meal, "eat", 180.0, 140.0, 0.0, 150.0, 10.0, 100.0, 1.0, 84.5, "开瓶可乐吧，上流"),
+        food("辣子鸡", Meal, "eat", 120.0, 100.0, 0.0, 120.0, 0.0, 100.0, 0.0, 52.0, "当红辣子鸡哟"),
+        food("罗宋汤", Meal, "eat", 80.0, 100.0, 0.0, 110.0, 0.0, 75.0, 0.0, 42.5, "咲夜！“给我吃!”"),
+        food("麻婆豆腐", Meal, "eat", 60.0, 100.0, 0.0, 110.0, 0.0, 75.0, 0.0, 39.0, "麻婆豆腐之所以叫麻婆豆腐是因为麻婆喜欢吃"),
+        food("梅菜扣肉", Meal, "eat", 100.0, 100.0, 0.0, 100.0, 0.0, 62.0, 0.0, 43.0, "不会咬人的谢谢"),
+        food("面包", Meal, "eat", 0.0, 50.0, 0.0, 100.0, 0.0, 25.0, 0.0, 21.0, "你还记得你吃过多少块面包吗"),
+        food("南瓜吐司", Meal, "eat", 40.0, 80.0, 0.0, 100.0, 0.0, 37.0, 0.0, 30.5, "加了南瓜！是的！我加了南瓜！"),
+        food("酿豆腐", Meal, "eat", 60.0, 100.0, 0.0, 80.0, 0.0, 37.0, 0.0, 32.0, "你中有我，我中有你"),
+        food("披萨", Meal, "eat", 120.0, 100.0, 0.0, 100.0, 0.0, 50.0, 0.0, 46.0, "不要放菠萝！！！"),
+        food("三明治", Meal, "eat", 40.0, 80.0, 0.0, 85.0, 0.0, 37.0, 0.0, 28.0, "两面包夹芝士"),
+        food("沙拉", Meal, "eat", 120.0, 80.0, 0.0, 80.0, 10.0, 12.0, 0.0, 49.0, "沙拉沙拉啦啦啦"),
+        food("烧鹅", Meal, "eat", 120.0, 120.0, 0.0, 100.0, 0.0, 75.0, 0.0, 48.5, "官方特意调整成鹅的，我就要在这里写上烧鸡两个大字！"),
+        food("酸菜鱼", Meal, "eat", 120.0, 120.0, 0.0, 110.0, 0.0, 87.0, 0.0, 51.0, "人人皆是酸菜鱼"),
+        food("西冷牛排", Meal, "eat", 200.0, 120.0, 0.0, 140.0, 15.0, 100.0, 1.0, 90.0, "开瓶拉菲吧，上流"),
+        food("香煎牛仔骨", Meal, "eat", 240.0, 120.0, 0.0, 160.0, 10.0, 125.0, 2.0, 101.5, "开瓶红酒吧，上流"),
+        food("盐焗鸡", Meal, "eat", 120.0, 100.0, 0.0, 90.0, 0.0, 75.0, 0.0, 45.5, "谁说的腌鸡！站出来！"),
+        food("芝士焗虾", Meal, "eat", 100.0, 80.0, 0.0, 70.0, 0.0, 75.0, 0.0, 37.5, "焗虾闭嘴"),
+        food("纸包鸡", Meal, "eat", 80.0, 85.0, 0.0, 75.0, 0.0, 75.0, 0.0, 35.5, "纸包鸡包纸包鸡包鸡包纸"),
+        food("炸鸡腿", Meal, "eat", 40.0, 40.0, 0.0, 40.0, 0.0, 50.0, 0.0, 18.5, "你每吃一个炸鸡腿，就有0.5只鸡受到伤害。保护鸡鸡，从一次吃两个炸鸡腿做起！"),
+        food("汉堡", Meal, "eat", 40.0, 60.0, 0.0, 60.0, 0.0, 50.0, 0.0, 23.0, "还想要汉O王？这价格不是华O士已经对你很好了。"),
+        // ===== 年节大餐 (food.lps) =====
+        food("yearmantou", Meal, "eat", 200.0, 100.0, -5.0, 200.0, 2.0, 120.0, 3.0, 96.0, "大的小的圆的方的长的短的扁的条的都是馒头，甜的咸的牛奶蔬菜杂粮原味都好吃！"),
+        food("yearchicken", Meal, "eat", 100.0, 240.0, -10.0, 300.0, 1.0, 100.0, 2.0, 98.0, "南方必备年菜---鸡，当然不论炒鸡、白切鸡、卤鸡、烧鸡还是大盘鸡都算。"),
+        food("yearfish", Meal, "eat", 100.0, 160.0, -10.0, 180.0, 1.0, 100.0, 2.0, 72.5, "主人主人，你的红烧鱼确实很香，但还是太吃厨艺了~"),
+        food("yearjiaozi", Meal, "eat", 200.0, 100.0, 0.0, 220.0, 2.0, 120.0, 3.0, 100.0, "《猪肉白菜馅可是经典》《羊肉大葱馅也非常好吃》《三鲜馅也是不错的选择》《什么叫西红柿炒蛋馅？》"),
+        food("白切鸡", Meal, "eat", 100.0, 240.0, -20.0, 280.0, 1.0, 120.0, 1.5, 65.6, "是的，去年也是白切鸡，30吃到15，陷入白切鸡的循环循环循环…"),
+        food("清蒸鲈鱼", Meal, "eat", 100.0, 260.0, -10.0, 180.0, 1.0, 100.0, 1.5, 53.2, "看来去年的红烧鱼确实不受欢迎，今年改清蒸了。"),
+        food("芋头扣肉", Meal, "eat", 200.0, 180.0, 0.0, 240.0, 1.0, 100.0, 2.0, 73.2, "龟公咯，你怎么把扣肉打翻了，现在立刻给我滚出村子！"),
+        food("油爆大虾", Meal, "eat", 300.0, 140.0, 0.0, 160.0, 0.5, 140.0, 2.0, 75.2, "甜咸之争已经不重要了，现在该来讨论大虾白灼还是爆炒了！"),
+        food("为了这碟醋", Meal, "eat", 200.0, 200.0, 0.0, 260.0, 3.0, 120.0, 3.0, 83.6, "原来饺子醋在这里。"),
+        // ===== 药品 (drug.lps) =====
+        food("太阳系", Drug, "medicine", -180.0, -100.0, 0.0, 0.0, 50.0, 0.0, -4.0, 0.0, "没钱也能吃,可以用来拯救存档(生病), 没事别吃这个"),
+        food("维生素C含片", Drug, "medicine", 40.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 16.5, "本产品为保健品不能代替药品"),
+        food("钙片", Drug, "medicine", 80.0, 20.0, 0.0, 1.0, 10.0, 0.0, 0.0, 24.5, "郑重声明，本产品与同名影视产品没有一点关系。"),
+        food("脑黑金", Drug, "medicine", 480.0, 20.0, 0.0, 0.0, 15.0, -25.0, 0.0, 94.5, "过年过节不收礼！__________！(3分)"),
+        food("666感冒灵颗粒", Drug, "medicine", 160.0, 0.0, 0.0, 0.0, 20.0, 0.0, 0.0, 46.5, "老牌子，值得信任，有妈妈的味道。"),
+        food("健胃整肠丸", Drug, "medicine", 184.0, 20.0, 0.0, 0.0, 25.0, 0.0, 0.0, 57.0, "这是什么？肚子疼？来两粒。这是什么？拉肚子？来两粒"),
+        food("布洛芬缓释胶囊", Drug, "medicine", 480.0, 20.0, 0.0, 0.0, 35.0, 0.0, 0.0, 116.0, "在以前的大瘟疫时代，曾经作为货币使用，最高的时候价值连城"),
+        food("速效救心丸", Drug, "medicine", 640.0, 0.0, 0.0, 0.0, 75.0, 0.0, 0.0, 181.5, "急急急，等下有得你急的。"),
+        food("大力丸", Drug, "medicine", 240.0, 20.0, 0.0, 0.0, 50.0, 50.0, 0.0, 94.0, "加入千年老山参，野生蜂王浆，人形何首乌，全部融于一炉。"),
+        food("阿司匹林", Drug, "medicine", 400.0, 0.0, 0.0, 0.0, 65.0, 0.0, 0.0, 131.5, "发烧去医院经常见的药，从小到大都不懂为什么长得和螺丝头一样"),
     ]
 }
 

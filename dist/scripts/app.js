@@ -46,6 +46,14 @@ const EDGE_FALL_STEP_PX = 48;
 const EDGE_FALL_TICK_MS = 24;
 const EDGE_FALL_BOTTOM_SAFE_GAP_PX = 56;
 const EDGE_CLIMB_MAX_MS = 180000;
+// 拖拽松手时距地面超过该高度 → 触发重力下坠安全落地
+// 距地面高于屏幕工作区高度的此比例才触发重力下坠 — 太小会导致轻微拖动也演一整套坠落动画
+const GRAVITY_DROP_MIN_RATIO = 0.3;
+// 工作区高度不可用时的兜底触发距离
+const GRAVITY_DROP_MIN_HEIGHT_PX = 150;
+const GRAVITY_DROP_TICK_MS = 24;
+const GRAVITY_DROP_ACCEL_PX = 7;
+const GRAVITY_DROP_MAX_SPEED_PX = 68;
 const GRAPH_TYPE_ALIASES = {
   idle: [
     'idle_yawning',
@@ -547,6 +555,7 @@ class ToolBar {
     const cols = [
       { id: 'feed',    label: '投喂',  hasSub: true },
       { id: 'panel',   label: '面板',  hasSub: false },
+      { id: 'monitor', label: '监控',  hasSub: true },
       { id: 'interact',label: '互动',  hasSub: true },
       { id: 'diy',     label: '自定',  hasSub: false },
       { id: 'system',  label: '系统',  hasSub: true },
@@ -574,6 +583,7 @@ class ToolBar {
         if (col.id === 'feed') { this._showFeedSub(tab); }
         else if (col.id === 'interact') { this._showInteractSub(tab); }
         else if (col.id === 'system') { this._showSystemSub(tab); }
+        else if (col.id === 'monitor') { this._showMonitorSub(tab); }
         else if (col.id === 'diy') { this.hide(); this.app.showBubble('暂无自定功能', 1500); }
         else if (col.id === 'panel') { this._showPanel(); }
       });
@@ -802,6 +812,13 @@ class ToolBar {
     modal.panel.appendChild(error);
     modal.panel.appendChild(actions);
     requestAnimationFrame(() => input.focus());
+  }
+
+  _showMonitorSub(anchor) {
+    this._showSubmenu(anchor, [
+      { label: '📡 工具状态', action: () => { this.hide(); invoke('open_monitor_panel', {}).catch(() => {}); } },
+      { label: '🔄 刷新检测', action: () => { this.hide(); this.app._pollCodingMonitor(); } },
+    ]);
   }
 
   _showSystemSub(anchor) {
@@ -1070,6 +1087,13 @@ class DesktopPetApp {
     this.chatUI = new ChatUI(this);
     this.settingsUI = new SettingsUI(this);
 
+    // Coding Tool 监控
+    this._codingMonitorTools = [];
+    this._codingMonitorAnyWorking = false;
+    this._codingMonitorPrevWorking = false;
+    this._codingMonitorTimer = null;
+    this._startCodingMonitor();
+
     this._init();
   }
 
@@ -1110,7 +1134,7 @@ class DesktopPetApp {
 
       // 4. 游戏时钟 — 每秒推进一次
       this._sideHideCheckInterval = setInterval(() => this._checkSideHide(), 2000);
-      this._auxWindowTimer = setInterval(() => this._refreshAuxWindowActive(), 500);
+      this._auxWindowTimer = setInterval(() => this._refreshAuxWindowActive(), 1500);
 
       let tickCount = 0;
       this._tickInterval = setInterval(() => {
@@ -1120,6 +1144,7 @@ class DesktopPetApp {
             this._mischiefBusy = false;
             this._wasWorking = true;
             this._rememberWorkContext(result);
+            this._updateWorkTimerUI(result.work);
             if (result.graphType && this.graphType !== result.graphType && !this._manualAnimLock && !this._toolbarActive) {
               this.playAnimation(result.graphType, result.mood || 'normal', null, { ambient: true });
             }
@@ -1133,12 +1158,22 @@ class DesktopPetApp {
               }).catch(() => {});
             }
           } else {
-            if (this._wasWorking) {
+            this._removeWorkTimerUI();
+            // monitor_coding 是前端监控触发的工作态, 生命周期由监控快照管理,
+            // 不能被 game_tick 的 Rust 工作会话结束信号清除
+            if (this._wasWorking && this._currentWorkContext !== 'monitor_coding') {
               this._wasWorking = false;
               this._currentWorkContext = null;
               this._manualAnimLock = false;
               if (this._manualAnimTimer) { clearTimeout(this._manualAnimTimer); this._manualAnimTimer = null; }
-              this.playAnimation('default', result.mood || 'normal');
+              // Rust 工作结束时若 coding 监控仍在工作, 无缝切回监控工作态
+              if (this._codingMonitorAnyWorking && !this._manualSleepMode) {
+                this._wasWorking = true;
+                this._currentWorkContext = 'monitor_coding';
+                this.playAnimation('workone', result.mood || this.mode, null, { ambient: true });
+              } else {
+                this.playAnimation('default', result.mood || 'normal');
+              }
             }
             if (result.mood && result.mood !== this.mode && !this._manualAnimLock && !this._musicActive && !this._mischiefBusy) {
               const prevMode = this.mode;
@@ -1203,16 +1238,6 @@ class DesktopPetApp {
               warn('thirst', '有点渴了...', 2000, 20000);
             } else if (st.energy < 15 && !this._wasWorking && !this._manualSleepMode) {
               warn('energy', '好累啊，想睡一觉...', 2000, 30000);
-            }
-          }).catch(() => {});
-        }
-        // 作业进度每 30 秒提示一次
-        if (tickCount % 30 === 0 && this._wasWorking) {
-          invoke('get_pet_status', {}).then((s) => {
-            const work = s?.work;
-            if (work?.isActive && work?.name) {
-              const pct = Math.round((work.progress || 0) * 100);
-              this.showBubble(`${work.name} 进行中... ${pct}%`, 2000);
             }
           }).catch(() => {});
         }
@@ -1890,7 +1915,7 @@ class DesktopPetApp {
       drink: `主人给我喝：${context.label || context.foodName || '饮品'}；我该说什么？`,
       play: `我准备开始玩耍：${context.label || work.name || '玩耍'}；我该说什么？`,
       work: `我准备开始工作/学习：${context.label || context.workName || work.name || '工作'}；我该说什么？`,
-      sing: `主人想听我唱「${context.songTitle || context.label || '一首歌'}」。请写一段2到4句的中文原创可唱台词，像桌宠在即兴唱歌；可以包含啦啦啦、轻轻哼唱等拟声，但不要引用、续写或复现任何真实歌曲的歌词。`,
+      sing: `主人想听我唱「${context.songTitle || context.label || '一首歌'}」。请先回想这首歌的主题、意境、画面和情绪（比如中国风、思念、雨景、热血等），再写一段2到4句的中文原创唱词，让主人一听就觉得"有这首歌的味道"；禁止引用、续写或复现真实歌词，也不要只用"啦啦啦"等拟声词敷衍，要唱出有画面感的具体句子。`,
       music: `我听到音乐，准备跳舞；我该说什么？`,
       chatter: (() => {
         const recent = context.recentChatter;
@@ -1935,6 +1960,8 @@ class DesktopPetApp {
       .replace(/\r?\n+/g, ' ')
       .replace(/^(回复|台词|气泡|桌宠|宠物|唱词|歌词)[:：]\s*/i, '')
       .replace(/^["“'‘\s]+|["”'’\s]+$/g, '')
+      // LLM 常见方括号格式残留: xxxx[歌名]xxx → 清除方括号及其中内容
+      .replace(/[\[【][^\]】]*[\]】]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
     if (!value) return '';
@@ -1986,7 +2013,7 @@ class DesktopPetApp {
       }).catch(() => '你是一只活泼、亲近主人的桌面宠物。');
       const petName = config.pet_name || '喵喵';
       const taskPrompt = context.type === 'sing'
-        ? '你现在只负责给桌宠生成一小段原创唱词。唱词要短、自然、可爱，贴合主人点的歌名，但不要复现真实歌曲歌词。'
+        ? '你现在只负责给桌宠生成一小段原创唱词。先想清楚主人点的这首歌讲什么、是什么风格氛围，再用原创句子唱出同样的意境和画面感，让人能联想到这首歌；禁止复现真实歌词，禁止用"啦啦啦"等无意义拟声敷衍。'
         : '你现在只负责给桌宠生成主动气泡台词。台词要短、自然、可爱，贴合当前事件。';
       const prompt = `你的名字叫「${petName}」。\n${basePrompt}\n\n${taskPrompt}`;
       const isChatterType = (context.type === 'chatter');
@@ -2119,13 +2146,19 @@ class DesktopPetApp {
         }
         return false;
       }
-      const base64Wav = await invoke('tts_speak', { text: normalized });
+      const invokeArgs = { text: normalized };
+      if (options.sing) invokeArgs.sing = true;
+      const base64Wav = await invoke('tts_speak', invokeArgs);
       if (!base64Wav || seq !== this._ttsSeq) {
         if (seq === this._ttsSeq && this._ttsActiveText === normalized) {
           this._ttsActiveText = '';
           this._ttsBusyUntil = 0;
         }
         return false;
+      }
+      // 播放即将开始 — 通知调用方 (用于让文字气泡与语音同步出现)
+      if (typeof options.onStart === 'function') {
+        try { options.onStart(); } catch (_) {}
       }
       let audio = null;
       audio = playBase64Wav(base64Wav, () => {
@@ -2496,6 +2529,7 @@ class DesktopPetApp {
       const loadedGraph = await this._playAmbientGraphWithFallback(candidates, this.mode, {
         force: true,
         startPhase: 'b_loop',
+        endPoseVariant: true,
       });
       if (loadedGraph) {
         this._walkGraphType = loadedGraph;
@@ -2577,6 +2611,7 @@ class DesktopPetApp {
       }, {
         force: true,
         startPhase: 'c_end',
+        endPoseVariant: true,
         lockDurationMs: 2400,
       });
       if (!loaded) {
@@ -2951,6 +2986,108 @@ class DesktopPetApp {
 
   // ── 气泡提示 ──
 
+  // ── Coding Tool 监控 ──
+
+  _startCodingMonitor() {
+    // 通道1：监听 Tauri event（实时推送，Rust 后台线程每3秒 emit）
+    if (window.PetRuntime && window.PetRuntime.listen) {
+      // 只走 snapshot 单一通道 — snapshot 内已带 any_just_completed,
+      // 再监听 task-complete 事件会把同一次完成播报两遍
+      window.PetRuntime.listen('coding-monitor-snapshot', (event) => {
+        const snapshot = event.payload;
+        if (snapshot) this._processCodingSnapshot(snapshot);
+      });
+    }
+    // 通道2：轮询 fallback
+    this._pollCodingMonitorOnce();
+    // 后台事件通道已每轮推送快照，这里只做低频兜底轮询
+    this._codingMonitorTimer = setInterval(() => this._pollCodingMonitorOnce(), 20000);
+  }
+
+  async _pollCodingMonitorOnce() {
+    try {
+      const snapshot = await invoke('coding_tools_poll', {});
+      if (snapshot) this._processCodingSnapshot(snapshot);
+    } catch (_) {}
+  }
+
+  _processCodingSnapshot(snapshot) {
+    this._codingMonitorTools = snapshot.tools || [];
+    this._codingMonitorAnyWorking = !!snapshot.any_working;
+
+    // 任务完成通知
+    const justCompleted = snapshot.any_just_completed || [];
+    if (justCompleted.length > 0) this._handleCodingTaskComplete(justCompleted);
+
+    // 工作状态联动 — 后端已做完成判定滞回, 这里的 true/false 翻转即真实任务边界
+    if (this._codingMonitorAnyWorking !== this._codingMonitorPrevWorking) {
+      const bubbleNow = performance.now();
+      if (this._codingMonitorAnyWorking) {
+        if (!this._wasWorking && !this._manualSleepMode) {
+          this._wasWorking = true;
+          this._currentWorkContext = 'monitor_coding';
+          // 停掉自主行走, 防止走路动画覆盖工作动画
+          invoke('reset_walk_state', {}).catch(() => {});
+          this.playAnimation('workone', this.mode);
+          // 开工气泡 3 分钟冷却 — 短暂断续不重复刷屏, 动画状态照常切换
+          if (!this._codingStartBubbleAt || bubbleNow - this._codingStartBubbleAt > 180000) {
+            this._codingStartBubbleAt = bubbleNow;
+            this.showBubble('检测到主人在用 coding 工具，我也来帮忙喵~', 3000);
+          }
+        }
+      } else {
+        if (this._wasWorking && this._currentWorkContext === 'monitor_coding') {
+          this._wasWorking = false;
+          this._currentWorkContext = null;
+          this._returnToIdle(this.mode);
+          if (!this._codingExitBubbleAt || bubbleNow - this._codingExitBubbleAt > 120000) {
+            this._codingExitBubbleAt = bubbleNow;
+            this.showBubble('工作完成啦，出去逛逛喵~', 2500);
+          }
+        }
+      }
+      this._codingMonitorPrevWorking = this._codingMonitorAnyWorking;
+    }
+  }
+
+  _handleCodingTaskComplete(completedTools) {
+    const now = performance.now();
+    this._codingCompleteAnnouncedAt = this._codingCompleteAnnouncedAt || {};
+    for (const toolName of completedTools) {
+      // 同一工具 60 秒内只播报一次完成, 防御边沿信号重复
+      const lastAt = this._codingCompleteAnnouncedAt[toolName];
+      if (lastAt && now - lastAt < 60000) continue;
+      this._codingCompleteAnnouncedAt[toolName] = now;
+      const messages = [
+        `主人, ${toolName} 中的任务已经执行完成啦！`,
+        `${toolName} 跑完了喵~去看看吧！`,
+      ];
+      const msg = messages[Math.floor(Math.random() * messages.length)];
+      this.showBubble(msg, 4000);
+      this._tryTTSSpeak(msg);
+
+      // 工作中 (直播/学习/监控工作态) 只播报不切动画 —
+      // 否则 say 会打断工作动画, 1 秒后又被 game_tick 恢复, 看起来像中断重启
+      if (!this._wasWorking && this._manifestAnimations.has('say')) {
+        this.playAnimation('say', this.mode);
+        setTimeout(() => {
+          if (this.graphType === 'say') this._returnToIdle(this.mode);
+        }, 3000);
+      }
+    }
+  }
+
+  async _pollCodingMonitor() {
+    await this._pollCodingMonitorOnce();
+    this.showBubble('已刷新监控状态', 1500);
+  }
+
+  async _tryTTSSpeak(text) {
+    try {
+      await invoke('tts_speak', { text, sing: false });
+    } catch (_) {}
+  }
+
   showBubble(text, duration = 2500) {
     this._clearBubble();
     const bubble = document.createElement('div');
@@ -3006,6 +3143,88 @@ class DesktopPetApp {
     }
   }
 
+  // ── 工作/玩耍进行计时 (对标 VPet 工作进度条) ──
+
+  _formatWorkClock(secs) {
+    const total = Math.max(0, Math.floor(Number(secs) || 0));
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+
+  // 工作期间常驻显示: 工种名 + 已用/总时长 + 进度条 + 累计收益
+  _updateWorkTimerUI(work) {
+    if (!work || !work.isActive) {
+      this._removeWorkTimerUI();
+      return;
+    }
+    let el = this._workTimerEl;
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'pet-work-timer';
+      Object.assign(el.style, {
+        position: 'fixed',
+        left: '50%',
+        bottom: `${PET_BODY_VIEWPORT_SIZE - 12}px`,
+        transform: 'translateX(-50%)',
+        background: 'rgba(0,0,0,0.72)',
+        color: '#fff',
+        padding: '3px 9px 4px',
+        borderRadius: '9px',
+        fontSize: '10px',
+        fontFamily: 'sans-serif',
+        lineHeight: '1.35',
+        whiteSpace: 'nowrap',
+        textAlign: 'center',
+        zIndex: '140',
+        pointerEvents: 'none',
+      });
+      const text = document.createElement('div');
+      const bar = document.createElement('div');
+      Object.assign(bar.style, {
+        marginTop: '2px',
+        height: '3px',
+        borderRadius: '2px',
+        background: 'rgba(255,255,255,0.25)',
+        overflow: 'hidden',
+      });
+      const fill = document.createElement('div');
+      Object.assign(fill.style, {
+        height: '100%',
+        width: '0%',
+        background: '#7ec97f',
+        borderRadius: '2px',
+        transition: 'width 0.4s linear',
+      });
+      bar.appendChild(fill);
+      el.appendChild(text);
+      el.appendChild(bar);
+      document.body.appendChild(el);
+      this._workTimerEl = el;
+      this._workTimerTextEl = text;
+      this._workTimerFillEl = fill;
+    }
+    const name = work.name || '工作';
+    const elapsedText = this._formatWorkClock(work.elapsedSecs);
+    const totalSecs = Number(work.durationSecs) || 0;
+    const totalText = totalSecs > 0 ? ` / ${this._formatWorkClock(totalSecs)}` : '';
+    const pct = Math.round(Math.max(0, Math.min(1, Number(work.progress) || 0)) * 100);
+    // Work 收益进金钱, Study/Play 收益进经验 (同 Rust WorkType 结算规则)
+    const unit = work.type === 'Work' ? '金币' : '经验';
+    const earned = Math.max(0, Number(work.getCount) || 0);
+    this._workTimerTextEl.textContent = `⏱ ${name} ${elapsedText}${totalText} · +${earned.toFixed(1)}${unit}`;
+    this._workTimerFillEl.style.width = `${pct}%`;
+  }
+
+  _removeWorkTimerUI() {
+    if (this._workTimerEl) {
+      this._workTimerEl.remove();
+      this._workTimerEl = null;
+      this._workTimerTextEl = null;
+      this._workTimerFillEl = null;
+    }
+  }
+
   _startThinkingDots() {
     this._stopThinkingDots();
     let dotCount = 1;
@@ -3032,6 +3251,27 @@ class DesktopPetApp {
     }
   }
 
+  // c_end 内可能拼接了多个落地姿势 (VPet 同目录下 FLA/FLB 等不同前缀 = 不同姿势)
+  // 按 "所在目录 + 文件名前缀" 分组, 随机挑一种播放 — 对标 VPet 落地姿势随机
+  _pickEndPoseVariant(phases) {
+    const frames = phases?.c_end || [];
+    if (frames.length < 2) return phases;
+    const groups = new Map();
+    for (const frame of frames) {
+      const file = String(frame?.file || '');
+      const dir = file.slice(0, file.lastIndexOf('/') + 1);
+      const base = String(frame?.name || file.slice(dir.length));
+      const prefix = base.split('_')[0] || base;
+      const key = `${dir}|${prefix}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(frame);
+    }
+    if (groups.size <= 1) return phases;
+    const variants = [...groups.values()];
+    const picked = variants[Math.floor(Math.random() * variants.length)];
+    return { ...phases, c_end: picked };
+  }
+
   async _loadAnimation(graphType, mode, options = {}) {
     const resolvedGraphType = this._resolveGraphType(graphType);
     const phasesKey = `${resolvedGraphType}|${mode}`;
@@ -3043,6 +3283,8 @@ class DesktopPetApp {
       phases = await invoke('get_animation_frames', { graphType: resolvedGraphType, mode });
       phasesCache.set(phasesKey, phases);
     }
+    // 缓存里存完整 phases, 变体裁剪只作用于本次播放的副本
+    if (options.endPoseVariant) phases = this._pickEndPoseVariant(phases);
 
     // 收集所有帧路径 (含前景叠加层)
     const allPaths = [];
@@ -3161,6 +3403,7 @@ class DesktopPetApp {
       animationLoaded = await this._loadAnimation(graphType, mode, {
         force: !!options.force,
         requirePlayableFrames: !!options.requirePlayableFrames,
+        endPoseVariant: !!options.endPoseVariant,
       });
       // startPhase: 'b_loop' — 跳过 a_start 直接进入循环阶段 (对标 VPet 拖拽行为)
       if (animationLoaded && options.startPhase === 'b_loop') {
@@ -3353,6 +3596,7 @@ class DesktopPetApp {
         startPhase: 'c_end',
         message: '轻轻落地喵~',
         pauseMs: 2400,
+        direction,
       };
     }
 
@@ -3368,6 +3612,7 @@ class DesktopPetApp {
         pauseMs: 4200,
         slideDx: Math.round(slideDx),
         slideDy: Math.round(slideDy),
+        direction,
       };
     }
 
@@ -3377,6 +3622,7 @@ class DesktopPetApp {
       startPhase: 'c_end',
       message: '安全落地喵~',
       pauseMs: 2600,
+      direction,
     };
   }
 
@@ -3417,12 +3663,107 @@ class DesktopPetApp {
     }, totalMs + 160);
   }
 
+  // 悬空松手 → 重力加速下坠到工作区底部
+  // 返回值: { landed: true, loadedGraph } = 已坠地 (落地姿势由调用方接管),
+  //         'aborted' = 下坠中被重新抓起, false = 不需要下坠
+  async _gravityDropToGround(direction, mood) {
+    const [pos, screen] = await Promise.all([
+      invoke('get_window_position', {}),
+      invoke('get_screen_info', {}),
+    ]);
+    const bounds = this._screenBounds(screen, pos);
+    const visibleBounds = this._visiblePetBoundsPx(pos);
+    const groundY = this._edgeFallBottomY(bounds, visibleBounds);
+    let y = Math.round(Number(pos.y) || 0);
+    const height = groundY - y;
+    const minDrop = Math.round(bounds.workHeight * GRAVITY_DROP_MIN_RATIO) || GRAVITY_DROP_MIN_HEIGHT_PX;
+    if (!Number.isFinite(height) || height < minDrop) return false;
+
+    this.showBubble('哇哇哇——要掉下去了喵！', 1600);
+    const side = direction === 'left' ? 'left' : 'right';
+    const fallCandidates = [`move.fall.${side}`, 'raise'].map((graph) => this._resolveGraphType(graph));
+    const loadedGraph = await this._playAmbientGraphWithFallback(fallCandidates, mood, {
+      force: true,
+      startPhase: 'b_loop',
+      endPoseVariant: true,
+    });
+
+    let velocity = 10;
+    while (y < groundY) {
+      if (this._dragging) return 'aborted';
+      velocity = Math.min(velocity + GRAVITY_DROP_ACCEL_PX, GRAVITY_DROP_MAX_SPEED_PX);
+      const step = Math.min(velocity, groundY - y);
+      await invoke('move_window_by', { dx: 0, dy: step }).catch(() => {});
+      y += step;
+      if (y >= groundY) break;
+      await new Promise((resolve) => setTimeout(resolve, GRAVITY_DROP_TICK_MS));
+    }
+    if (this._dragging) return 'aborted';
+    return { landed: true, loadedGraph };
+  }
+
+  // 落地瞬间的姿势动画 — 对标 VPet: 摔落接 fall 的 c_end 起身,
+  // 普通落地随机挑一种 Raised_Static C 段完美落地姿势
+  async _playTouchdownPose(landing, loadedGraph, mood) {
+    const resolvedLoaded = loadedGraph ? this._resolveGraphType(loadedGraph) : null;
+    const fallEndReady = landing.kind === 'fall'
+      && resolvedLoaded && this.graphType === resolvedLoaded
+      && this.player?.currentPhase === 'b_loop'
+      && this.player?.phases?.c_end?.length > 0;
+
+    this.showBubble(fallEndReady ? landing.message : '安全落地喵~', 2200);
+    this._walkPauseUntil = performance.now() + 2800;
+    await new Promise((resolve) => {
+      if (fallEndReady) {
+        const timer = setTimeout(resolve, 2400);
+        this.player.triggerEnd(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+        return;
+      }
+      this.playAnimation('raise', mood, () => resolve(), {
+        force: true,
+        startPhase: 'c_end',
+        endPoseVariant: true,
+        lockDurationMs: 2600,
+      }).then((ok) => {
+        if (!ok) resolve();
+      }).catch(() => resolve());
+    });
+
+    // 落地后按当前帧重新校准高度: 下坠时 groundY 是用提起/坠落帧的轮廓算的,
+    // 这些帧脚部偏高, 直接落到该位置会让站立帧的脚陷进任务栏
+    try {
+      const [pos2, screen2] = await Promise.all([
+        invoke('get_window_position', {}),
+        invoke('get_screen_info', {}),
+      ]);
+      const bounds2 = this._screenBounds(screen2, pos2);
+      const vb2 = this._visiblePetBoundsPx(pos2);
+      const sink = (Math.round(Number(pos2.y) || 0) + vb2.bottom) - bounds2.workBottom;
+      if (sink > 0) await invoke('move_window_by', { dx: 0, dy: -sink }).catch(() => {});
+    } catch (_) {}
+  }
+
   async _playLandingAction(landing, mood) {
     const finish = () => this._finishLandingAction(mood);
+
+    // 先检测悬空: 距地面太高时重力下坠, 坠地后再接落地姿势
+    const dropResult = await this._gravityDropToGround(landing.direction, mood).catch(() => false);
+    if (dropResult === 'aborted') return; // 新一轮拖拽已接管状态
+    if (dropResult && dropResult.landed) {
+      await this._playTouchdownPose(landing, dropResult.loadedGraph, mood).catch(() => {});
+      finish();
+      return;
+    }
+
+    this.showBubble(landing.message, 2200);
     if (landing.kind === 'light' || landing.kind === 'safe') {
       const loaded = await this.playAnimation(landing.graph, mood, finish, {
         force: true,
         startPhase: 'c_end',
+        endPoseVariant: true,
         lockDurationMs: landing.pauseMs,
       });
       if (!loaded) finish();
@@ -3433,12 +3774,14 @@ class DesktopPetApp {
     const loaded = await this.playAnimation(landing.graph, mood, finish, {
       force: true,
       autoEndLoops: 1,
+      endPoseVariant: true,
       lockDurationMs: landing.pauseMs,
     });
     if (!loaded) {
       const fallbackLoaded = await this.playAnimation('raise', mood, finish, {
         force: true,
         startPhase: 'c_end',
+        endPoseVariant: true,
         lockDurationMs: 2400,
       });
       if (!fallbackLoaded) finish();
@@ -3467,7 +3810,7 @@ class DesktopPetApp {
 
     this._manualAnimLock = true;
     this._walkPauseUntil = performance.now() + landing.pauseMs;
-    this.showBubble(landing.message, 2200);
+    // 气泡由 _playLandingAction 决定 — 悬空下坠与原地落地的台词不同
     this._dragReleaseTimer = null;
 
     this._playLandingAction(landing, mood).catch((err) => {
@@ -3756,8 +4099,19 @@ class DesktopPetApp {
     if (seq !== this._singSeq) return;
     this._markProactiveAi('sing');
     const bubbleDuration = Math.max(4200, Math.min(SING_PERFORMANCE_LOCK_MS, speech.length * 120));
-    this.showBubble(speech, bubbleDuration);
-    await this._ttsSpeak(speech, { force: true, dedupeMs: 0 }).catch(() => false);
+    // 歌词气泡与语音同步 — TTS 合成耗时数秒, 等真正开声那一刻再显示歌词,
+    // 合成期间继续显示思考点, 避免文字早到、声音迟到
+    let lyricsShown = false;
+    const showLyrics = () => {
+      if (lyricsShown) return;
+      lyricsShown = true;
+      this._stopThinkingDots();
+      if (seq === this._singSeq) this.showBubble(speech, bubbleDuration);
+    };
+    this._startThinkingDots();
+    await this._ttsSpeak(speech, { force: true, dedupeMs: 0, sing: true, onStart: showLyrics }).catch(() => false);
+    // TTS 不可用或合成失败时兜底直接显示歌词
+    showLyrics();
 
     if (seq !== this._singSeq) return;
     const returnDelay = Math.max(3200, Math.min(SING_PERFORMANCE_LOCK_MS, speech.length * 150 + 1200));
@@ -3953,6 +4307,16 @@ class DesktopPetApp {
       if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
       return;
     }
+    // 工作中不移动 — 否则走路动画会覆盖工作动画
+    if (this._wasWorking) {
+      if (this._edgeClimbActive) {
+        await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
+      } else if (this._currentWorkContext === 'monitor_coding' && this.graphType === 'default') {
+        // 工作动画被其他动画顶掉并回到 default 后, 重新回到工作姿态
+        this.playAnimation('workone', this.mode, null, { ambient: true });
+      }
+      return;
+    }
 
     const now = performance.now();
     if (this._edgeClimbActive) {
@@ -4032,6 +4396,14 @@ class DesktopPetApp {
 
       const bounds = this._screenBounds(screen, pos);
       const visibleBounds = this._visiblePetBoundsPx(pos);
+
+      // 自愈: 任何原因 (坠落帧轮廓偏差/拖拽) 导致脚部陷进任务栏时, 上移回工作区底边
+      const sinkBelowWork = (Math.round(Number(pos.y) || 0) + visibleBounds.bottom) - bounds.workBottom;
+      if (sinkBelowWork > 0) {
+        await invoke('move_window_by', { dx: 0, dy: -sinkBelowWork }).catch(() => {});
+        pos.y = Math.round(Number(pos.y) || 0) - sinkBelowWork;
+      }
+
       const result = await invoke('walk_tick', {
         dtSeconds,
         windowX: Math.round(Number(pos.x) || 0) + visibleBounds.left - bounds.workLeft,
@@ -4045,9 +4417,7 @@ class DesktopPetApp {
       if (this._dragging || this._manualSleepMode || this._manualAnimLock) return;
       if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;
 
-      if (result.dx !== 0 || result.dy !== 0) {
-        await invoke('move_window_by', { dx: result.dx, dy: result.dy });
-      }
+      // 位移已在 Rust 端 walk_tick 内直接应用，前端只负责动画
 
       if (result.edgeHit) {
         const nextPos = {
@@ -4147,10 +4517,9 @@ class DesktopPetApp {
     this._clickthroughLastCheckAt = performance.now();
 
     try {
-      const [pos, screenCursorPos, windowCursorPos] = await Promise.all([
+      const [pos, screenCursorPos] = await Promise.all([
         invoke('get_window_position', {}),
         invoke('get_cursor_position', {}).catch(() => null),
-        window.PetRuntime.cursorPosition(null).catch(() => null),
       ]);
 
       const stillPanelActive = !!(this.chatUI && this.chatUI.isVisible);
@@ -4159,7 +4528,12 @@ class DesktopPetApp {
         return;
       }
 
-      const client = this._cursorClientPoint(pos, screenCursorPos) || this._cursorClientPoint(pos, windowCursorPos);
+      // 仅在 Rust 光标查询失败时才走运行时回退，避免每轮多发一次 IPC
+      let client = this._cursorClientPoint(pos, screenCursorPos);
+      if (!client && !screenCursorPos) {
+        const windowCursorPos = await window.PetRuntime.cursorPosition(null).catch(() => null);
+        client = this._cursorClientPoint(pos, windowCursorPos);
+      }
       if (!client) {
         this._setClickthrough(true);
         return;

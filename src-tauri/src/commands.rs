@@ -1,5 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
 use tauri::Manager;
 use crate::systems::stats::StatsData;
 use crate::ai::persona::PersonaSystem;
@@ -837,7 +840,6 @@ pub async fn chat_stream(
 
 // ── 交互系统 ──
 
-use std::sync::Arc;
 use crate::app_state::AppState;
 use crate::core::game_core::PetState;
 use crate::core::touch_area::TouchAreaType;
@@ -928,6 +930,20 @@ pub fn process_interaction(
     }))
 }
 
+/// 工作运行态 JSON — 含计时信息, 供前端展示工作/玩耍进行计时
+fn work_status_json(work: &crate::systems::work::WorkSystem) -> serde_json::Value {
+    serde_json::json!({
+        "isActive": work.is_active,
+        "progress": work.progress(),
+        "name": work.now_work.as_ref().map(|w| w.name.clone()),
+        "graph": work.now_work.as_ref().map(|w| w.graph.clone()),
+        "type": work.now_work.as_ref().map(|w| format!("{:?}", w.work_type)),
+        "elapsedSecs": work.elapsed_secs,
+        "durationSecs": work.now_work.as_ref().map(|w| w.duration_secs()).unwrap_or(0.0),
+        "getCount": work.get_count,
+    })
+}
+
 /// 获取宠物当前状态
 #[tauri::command]
 pub fn get_pet_status(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
@@ -940,11 +956,7 @@ pub fn get_pet_status(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_js
         "mood": stats.get_mood(),
         "graphType": core.current_graph_type,
         "stats": stats_json(&stats.data),
-        "work": {
-            "isActive": work.is_active,
-            "progress": work.progress(),
-            "name": work.now_work.as_ref().map(|w| w.name.clone()),
-        },
+        "work": work_status_json(&work),
     }))
 }
 
@@ -965,7 +977,7 @@ pub fn pet_action_feed(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_j
         .ok_or("no edible food found")?;
     stats.data.eat_food(
         food.exp, food.strength, food.strength_food,
-        food.strength_drink, food.feeling, food.health, 0.0,
+        food.strength_drink, food.feeling, food.health, food.likability,
     );
     stats.data.mark_interaction();
     core.set_state(PetState::Idle);
@@ -1000,7 +1012,7 @@ pub fn pet_action_drink(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_
         .ok_or("no drink found")?;
     stats.data.eat_food(
         food.exp, food.strength, food.strength_food,
-        food.strength_drink, food.feeling, food.health, 0.0,
+        food.strength_drink, food.feeling, food.health, food.likability,
     );
     stats.data.mark_interaction();
     core.set_state(PetState::Idle);
@@ -1025,6 +1037,7 @@ pub fn get_food_menu() -> Result<serde_json::Value, String> {
         .into_iter()
         .map(|f| serde_json::json!({
             "name": f.name,
+            "type": f.food_type,
             "graph": f.graph,
             "exp": f.exp,
             "strength": f.strength,
@@ -1032,7 +1045,9 @@ pub fn get_food_menu() -> Result<serde_json::Value, String> {
             "strengthFood": f.strength_food,
             "health": f.health,
             "feeling": f.feeling,
+            "likability": f.likability,
             "price": f.price,
+            "desc": f.desc,
             "image": f.image_rel_path(),
         }))
         .collect();
@@ -1071,7 +1086,7 @@ pub fn pet_action_eat(
 
     stats.data.eat_food(
         food.exp, food.strength, food.strength_food,
-        food.strength_drink, food.feeling, food.health, 0.0,
+        food.strength_drink, food.feeling, food.health, food.likability,
     );
     stats.data.mark_interaction();
     core.set_state(PetState::Idle);
@@ -1410,6 +1425,7 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
     let graph_type = core.current_graph_type.clone();
     let working = work.is_active;
     let leveled_up = stats.data.level() > level_before;
+    let work_json = work_status_json(&work);
 
     // 自动存档
     drop(core);
@@ -1419,6 +1435,7 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
         "mood": stats.data.get_mood(),
         "graphType": graph_type,
         "working": working,
+        "work": work_json,
         "completedWork": completed_work,
         "stats": stats_json(&stats.data),
         "leveledUp": leveled_up,
@@ -1434,6 +1451,7 @@ fn pick_edge_move_graph(side: &str, speed_px_per_sec: f64) -> String {
 /// 返回窗口位移�?+ 朝向 + 动画类型
 #[tauri::command]
 pub fn walk_tick(
+    window: tauri::WebviewWindow,
     dt_seconds: f64,
     window_x: i32,
     _window_y: i32,
@@ -1512,6 +1530,16 @@ pub fn walk_tick(
     if edge_hit {
         walk.reset_to_idle();
         core.current_graph_type = "default".into();
+    }
+
+    // 位移直接在 Rust 端应用 — 之前由前端再发一次 move_window_by 才移动,
+    // IPC 拥塞时动画继续循环而窗口不动, 表现为"原地跑"
+    if dx != 0 || dy != 0 {
+        if let Ok(pos) = window.outer_position() {
+            let _ = window.set_position(tauri::Position::Physical(
+                tauri::PhysicalPosition::new(pos.x + dx, pos.y + dy),
+            ));
+        }
     }
 
     Ok(serde_json::json!({
@@ -1629,6 +1657,19 @@ pub fn open_status_panel(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
     let win = app.get_webview_window("status-panel").ok_or("Status panel window not found")?;
     panel_position_near_pet(&app, &win, 280, 420);
+    let _ = win.eval("if(typeof load==='function')load();");
+    let _ = win.show();
+    let _ = win.set_focus();
+    Ok(())
+}
+
+/// 打开 Coding 工具监控面板 (独立窗口, 宠物旁边定位, 不遮挡)
+#[tauri::command]
+pub fn open_monitor_panel(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let win = app.get_webview_window("monitor-panel").ok_or("Monitor panel window not found")?;
+    panel_position_near_pet(&app, &win, 380, 520);
+    // 面板是 hide 而非 destroy, 重新打开时手动刷新一次数据
     let _ = win.eval("if(typeof load==='function')load();");
     let _ = win.show();
     let _ = win.set_focus();
@@ -1788,8 +1829,10 @@ pub fn has_tts_api_key(app: tauri::AppHandle) -> Result<bool, String> {
 }
 
 /// Call the TTS API and return base64 WAV data.
+/// When `sing` is true, switches to `mimo-v2.5-tts` with a preset voice
+/// and prepends the `(唱歌)` tag to the synthesis text (required by MiMo TTS).
 #[tauri::command]
-pub async fn tts_speak(app: tauri::AppHandle, text: String) -> Result<String, String> {
+pub async fn tts_speak(app: tauri::AppHandle, text: String, sing: Option<bool>) -> Result<String, String> {
     let key_path = data_dir(&app)?.join("tts-api-key.txt");
     if !key_path.exists() {
         return Err("TTS API Key not configured".into());
@@ -1817,22 +1860,32 @@ pub async fn tts_speak(app: tauri::AppHandle, text: String) -> Result<String, St
         return Err("TTS 文本为空".into());
     }
 
-    let is_voice_design = cfg.model.trim() == "mimo-v2.5-tts-voicedesign";
-    let assistant_content = synthesis_text.to_string();
-    let user_content = if is_voice_design {
-        format!("音色设定：{}\n演绎风格：{}", cfg.voice.trim(), cfg.style.trim())
-    } else {
-        cfg.style.trim().to_string()
-    };
+    let is_sing = sing.unwrap_or(false);
 
-    let audio = if is_voice_design {
-        serde_json::json!({ "format": "wav", "optimize_text_preview": false })
+    // Sing mode: must use mimo-v2.5-tts with a preset voice;
+    // voicedesign does not support singing.
+    let (model, user_content, assistant_content, audio) = if is_sing {
+        let tagged = format!("(唱歌){}", synthesis_text);
+        let style = cfg.style.trim().to_string();
+        ("mimo-v2.5-tts".to_string(), style, tagged,
+         serde_json::json!({ "format": "wav", "voice": "冰糖" }))
     } else {
-        serde_json::json!({ "format": "wav", "voice": cfg.voice })
+        let is_voice_design = cfg.model.trim() == "mimo-v2.5-tts-voicedesign";
+        let uc = if is_voice_design {
+            format!("音色设定：{}\n演绎风格：{}", cfg.voice.trim(), cfg.style.trim())
+        } else {
+            cfg.style.trim().to_string()
+        };
+        let aud = if is_voice_design {
+            serde_json::json!({ "format": "wav", "optimize_text_preview": false })
+        } else {
+            serde_json::json!({ "format": "wav", "voice": cfg.voice })
+        };
+        (cfg.model.clone(), uc, synthesis_text.to_string(), aud)
     };
 
     let body = serde_json::json!({
-        "model": cfg.model,
+        "model": model,
         "messages": [
             { "role": "user", "content": user_content },
             { "role": "assistant", "content": assistant_content }
@@ -1930,4 +1983,76 @@ pub fn sidehide_check(
             }
         }
     }
+}
+
+// ── Coding Tools 监控 ──
+
+use crate::systems::coding_tools::{MonitorSnapshot, WatcherEvent};
+use std::sync::mpsc;
+use tauri::Emitter;
+
+/// 轮询一次 coding 工具状态，返回快照
+#[tauri::command]
+pub fn coding_tools_poll(state: tauri::State<'_, std::sync::Arc<AppState>>) -> Result<MonitorSnapshot, String> {
+    let mut monitor = state.coding_monitor.lock().map_err(|e| e.to_string())?;
+    Ok(monitor.poll())
+}
+
+/// 获取当前 coding 工具状态（不轮询，只读快照）
+#[tauri::command]
+pub fn coding_tools_status(state: tauri::State<'_, std::sync::Arc<AppState>>) -> Result<Vec<crate::systems::coding_tools::CodingTool>, String> {
+    let monitor = state.coding_monitor.lock().map_err(|e| e.to_string())?;
+    Ok(monitor.tools.clone())
+}
+
+/// 启动 file watcher + 定时轮询 + Tauri event 推送
+/// 这个命令在应用启动时调用一次
+#[tauri::command]
+pub async fn coding_tools_start_monitor(app: tauri::AppHandle, state: tauri::State<'_, std::sync::Arc<AppState>>) -> Result<String, String> {
+    // 创建 watcher 事件的 channel
+    let (tx, rx) = mpsc::channel::<WatcherEvent>();
+    let tx_arc = Arc::new(Mutex::new(Some(tx)));
+
+    // 启动 file watcher
+    {
+        let mut monitor = state.coding_monitor.lock().map_err(|e| e.to_string())?;
+        monitor.start_watcher(tx_arc);
+    }
+
+    // 启动后台线程：接收 watcher 事件 + 定时轮询
+    let app_clone = app.clone();
+    let state_clone = state.inner().clone();
+
+    std::thread::spawn(move || {
+        // watcher 事件处理循环
+        loop {
+            // 处理 watcher 事件（非阻塞）
+            while let Ok(event) = rx.try_recv() {
+                if let Ok(mut monitor) = state_clone.coding_monitor.lock() {
+                    monitor.on_watcher_event(&event);
+                }
+            }
+
+            // 执行一轮完整检测
+            let snapshot = {
+                if let Ok(mut monitor) = state_clone.coding_monitor.lock() {
+                    monitor.poll()
+                } else {
+                    break;
+                }
+            };
+
+            // 如果有任务完成或有工具在工作，推送事件到前端
+            if !snapshot.any_just_completed.is_empty() || snapshot.any_working {
+                let _ = app_clone.emit("coding-monitor-update", &snapshot);
+            }
+
+            // 即使没有变化也每 5 秒推送一次完整快照（给前端面板刷新用）
+            let _ = app_clone.emit("coding-monitor-snapshot", &snapshot);
+
+            std::thread::sleep(Duration::from_secs(5));
+        }
+    });
+
+    Ok("monitor started".into())
 }

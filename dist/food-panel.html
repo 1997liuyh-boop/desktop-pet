@@ -95,14 +95,22 @@
 
         if (!items.length) { emptyEl.style.display = 'block'; return; }
 
+        // 按食物类型分组 — type 来自后端 FoodType（snake_case），旧数据无 type 时退回按 graph 分组
+        const TYPE_LABELS = { meal: '正餐', snack: '零食', drink: '饮品', functional: '功能性', drug: '药品' };
+        const TYPE_ORDER = ['正餐', '零食', '饮品', '功能性', '药品', '食物'];
         const groups = {};
         items.forEach(it => {
-          const g = it.graph === 'medicine' ? '药品' : it.graph === 'drink' ? '饮品' : '食物';
+          const g = TYPE_LABELS[it.type]
+            || (it.graph === 'medicine' ? '药品' : it.graph === 'drink' ? '饮品' : '食物');
           if (!groups[g]) groups[g] = [];
           groups[g].push(it);
         });
 
-        Object.entries(groups).forEach(([group, list]) => {
+        const ordered = Object.entries(groups).sort((a, b) => {
+          const ia = TYPE_ORDER.indexOf(a[0]); const ib = TYPE_ORDER.indexOf(b[0]);
+          return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+        });
+        ordered.forEach(([group, list]) => {
           const gt = document.createElement('div');
           gt.className = 'group-title';
           gt.textContent = group;
@@ -112,6 +120,7 @@
             const canAfford = currentMoney >= it.price;
             const btn = document.createElement('button');
             btn.className = 'item-btn' + (canAfford ? '' : ' cannot-afford');
+            if (it.desc) btn.title = it.desc; // 悬停展示 VPet 原版描述文案
 
             const nameLine = document.createElement('div');
             nameLine.className = 'item-name';
@@ -139,6 +148,7 @@
                 if (it.feeling) parts.push(`心情${it.feeling > 0 ? '+' : ''}${it.feeling}`);
                 if (it.health) parts.push(`健康${it.health > 0 ? '+' : ''}${it.health}`);
                 if (it.exp) parts.push(`经验${it.exp > 0 ? '+' : ''}${it.exp}`);
+                if (it.likability) parts.push(`好感${it.likability > 0 ? '+' : ''}${it.likability}`);
               }
               eff.textContent = parts.join('  ') || '无属性变化';
             }

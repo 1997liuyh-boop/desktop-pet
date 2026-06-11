@@ -8,6 +8,7 @@ mod app_state;
 mod tray_icon;
 
 use std::sync::Arc;
+use tauri::Emitter;
 use tauri::Manager;
 use tauri::tray::TrayIconBuilder;
 use app_state::AppState;
@@ -64,6 +65,7 @@ pub fn run() {
             commands::open_food_panel,
             commands::open_work_panel,
             commands::open_status_panel,
+            commands::open_monitor_panel,
             commands::cheat_set_level,
             commands::cheat_set_stat,
             commands::set_clickthrough,
@@ -73,6 +75,9 @@ pub fn run() {
             commands::has_tts_api_key,
             commands::save_tts_config,
             commands::load_tts_config,
+            commands::coding_tools_poll,
+            commands::coding_tools_status,
+            commands::coding_tools_start_monitor,
         ])
         .setup(|app| {
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -101,7 +106,7 @@ pub fn run() {
                 .build(app)?;
 
             // 设置/聊天/面板窗口: 拦截关闭按钮, 改为隐藏而非销毁, 以便可再次打开
-            for label in ["settings", "chat", "food-panel", "work-panel", "status-panel"] {
+            for label in ["settings", "chat", "food-panel", "work-panel", "status-panel", "monitor-panel"] {
                 if let Some(win) = app.get_webview_window(label) {
                     let win_clone = win.clone();
                     win.on_window_event(move |event| {
@@ -114,6 +119,7 @@ pub fn run() {
             }
 
             // 窗口初始位置 — 放在屏幕右下角且完整可见 (窗口 250x370 逻辑像素)
+            // 配置中 pet 窗口为 visible:false, 先定位再显示, 避免启动时在左上角闪现
             if let Some(window) = app.get_webview_window("pet") {
                 let _ = window.set_always_on_top(true);
                 if let Ok(Some(m)) = window.primary_monitor() {
@@ -130,7 +136,55 @@ pub fn run() {
                         tauri::PhysicalPosition::new(x, y),
                     ));
                 }
+                let _ = window.show();
             }
+
+            // 启动 Coding Tool 监控后台服务
+            {
+                use crate::systems::coding_tools::WatcherEvent;
+                use std::sync::mpsc;
+
+                let (tx, rx) = mpsc::channel::<WatcherEvent>();
+                let tx_arc = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+
+                // 启动 file watcher
+                {
+                    let state = app.state::<std::sync::Arc<AppState>>();
+                    let mut monitor = state.coding_monitor.lock().unwrap();
+                    monitor.start_watcher(tx_arc);
+                }
+
+                // 后台轮询 + event 推送
+                let app_handle = app.handle().clone();
+                let state = app.state::<std::sync::Arc<AppState>>().inner().clone();
+                std::thread::spawn(move || {
+                    // 等 3 秒让应用完全就绪
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    loop {
+                        // 处理 watcher 事件
+                        while let Ok(event) = rx.try_recv() {
+                            if let Ok(mut monitor) = state.coding_monitor.lock() {
+                                monitor.on_watcher_event(&event);
+                            }
+                        }
+                        // 完整检测
+                        let snapshot = {
+                            if let Ok(mut monitor) = state.coding_monitor.lock() {
+                                monitor.poll()
+                            } else {
+                                break;
+                            }
+                        };
+                        // 推送到前端
+                        let _ = app_handle.emit("coding-monitor-snapshot", &snapshot);
+                        if !snapshot.any_just_completed.is_empty() {
+                            let _ = app_handle.emit("coding-monitor-task-complete", &snapshot.any_just_completed);
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                    }
+                });
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

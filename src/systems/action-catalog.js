@@ -1,6 +1,7 @@
 const ACTION_GROUPS = [
   { id: 'study', label: '学习面板', shortLabel: '学习', icon: '✒️' },
   { id: 'work', label: '工作面板', shortLabel: '工作', icon: '🎙️' },
+  { id: 'monitor', label: '监控面板', shortLabel: '监控', icon: '📡' },
   { id: 'feed', label: '投喂', shortLabel: '投喂', icon: '🍱' },
   { id: 'bag', label: '背包', shortLabel: '背包', icon: '🎒' },
   { id: 'interaction', label: '互动', shortLabel: '互动', icon: '🐾' },
@@ -49,6 +50,18 @@ const ACTION_CATALOG = {
     rewards: { exp: 6, money: 2, hungerCost: 1, energyCost: 3, feelingCost: 2 },
     messages: { start: '我来擦一擦屏幕喵~', complete: '屏幕变干净啦！' },
   },
+  'work.copywriting': {
+    id: 'work.copywriting', group: 'work', label: '文案', icon: '📝', kind: 'activity',
+    activity: { duration: 300, label: '文案', progressLabel: '撰写文案中' },
+    animation: { graphTypes: ['workone', 'work', 'idle'], breakGraphTypes: ['playone', 'idle', 'move'] },
+    rewards: { exp: 20, money: 15, strength: 1, hungerCost: 10, energyCost: 12, feelingCost: 3 },
+    messages: { start: '开始写文案喵~', complete: '文案写完了喵！' },
+  },
+  'monitor.status': {
+    id: 'monitor.status', group: 'monitor', label: '工具监控', icon: '📡', kind: 'monitor',
+    animation: { graphTypes: ['workone', 'work', 'idle'] },
+    messages: { start: '让我看看主人的 coding 工具状态喵~' },
+  },
   'feed.food': {
     id: 'feed.food', group: 'feed', label: '吃饭', icon: '🍚', kind: 'inventory', itemType: 'food',
     animation: { graphTypes: ['eat', 'idle'] },
@@ -88,8 +101,8 @@ const ACTION_CATALOG = {
   },
 };
 
-const TOOLBAR_GROUPS = ['study', 'work', 'feed', 'interaction', 'system'];
-const PANEL_GROUPS = ['study', 'work', 'feed', 'bag'];
+const TOOLBAR_GROUPS = ['study', 'work', 'monitor', 'feed', 'interaction', 'system'];
+const PANEL_GROUPS = ['study', 'work', 'feed', 'bag', 'monitor'];
 
 function getActionMeta(actionId) {
   return ACTION_CATALOG[actionId] || null;

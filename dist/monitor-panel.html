@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Coding 工具监控</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a1a;
+      color: #e0e0e0;
+      font-family: "Microsoft YaHei", -apple-system, sans-serif;
+      font-size: 13px;
+      padding: 14px 16px 16px;
+      overflow-y: auto;
+      height: 100vh;
+    }
+
+    /* 顶部标题栏 */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .header-title { font-size: 15px; font-weight: bold; color: #fff; }
+    .header-live {
+      font-size: 10px;
+      color: #4ade80;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .live-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #4ade80;
+      box-shadow: 0 0 6px #4ade80;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+
+    /* 工具卡片 */
+    .tool-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+    .tool-card {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.07);
+      transition: border-color 0.3s, background 0.3s;
+    }
+    .tool-card.working {
+      background: rgba(255,167,38,0.08);
+      border-color: rgba(255,167,38,0.35);
+    }
+    .tool-card.task_completed {
+      background: rgba(66,165,245,0.08);
+      border-color: rgba(66,165,245,0.35);
+    }
+    .tool-icon { font-size: 26px; width: 34px; text-align: center; flex-shrink: 0; line-height: 1.2; }
+    .tool-body { flex: 1; min-width: 0; }
+    .tool-name-line {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 3px;
+    }
+    .tool-name { font-size: 14px; font-weight: 600; color: #f0f0f0; }
+    .tool-status {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 99px;
+      flex-shrink: 0;
+    }
+    .tool-task {
+      font-size: 11px;
+      color: #aaa;
+      margin-top: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tool-meta { font-size: 10px; color: #666; margin-top: 4px; }
+
+    /* 底部汇总 */
+    .footer {
+      padding: 9px 4px 0;
+      border-top: 1px solid rgba(255,255,255,0.07);
+      font-size: 11px;
+      color: #888;
+      text-align: center;
+    }
+
+    .loading { text-align: center; padding: 40px 0; color: #555; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="header-title">📡 Coding 工具监控</span>
+    <span class="header-live"><span class="live-dot"></span>实时</span>
+  </div>
+  <div id="tool-list" class="tool-list"><div class="loading">加载中…</div></div>
+  <div id="footer" class="footer"></div>
+
+  <script src="scripts/runtime.js"></script>
+  <script>
+    const { invoke } = window.PetRuntime;
+
+    const STATUS_LABELS = {
+      not_installed: '未安装',
+      not_running: '未启动',
+      idle: '已启动',
+      working: '任务进行中',
+      task_completed: '任务已完成',
+    };
+    const STATUS_COLORS = {
+      not_installed: '#555',
+      not_running: '#888',
+      idle: '#66bb6a',
+      working: '#ffa726',
+      task_completed: '#42a5f5',
+    };
+    const DEFAULT_TOOLS = [
+      { id: 'cursor', name: 'Cursor', icon: '🟢', status: 'not_installed' },
+      { id: 'claude_code', name: 'Claude Code', icon: '🟠', status: 'not_installed' },
+      { id: 'codex', name: 'Codex', icon: '🔵', status: 'not_installed' },
+      { id: 'gemini', name: 'Gemini CLI', icon: '🔷', status: 'not_installed' },
+    ];
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      })[c]);
+    }
+
+    function formatTime(iso) {
+      try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return '';
+        const pad = n => String(n).padStart(2, '0');
+        return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      } catch (_) { return ''; }
+    }
+
+    function render(tools, anyWorking) {
+      const list = (tools && tools.length) ? tools : DEFAULT_TOOLS;
+      const listEl = document.getElementById('tool-list');
+
+      let html = '';
+      for (const tool of list) {
+        const key = tool.status || 'not_installed';
+        const color = STATUS_COLORS[key] || '#888';
+        const label = STATUS_LABELS[key] || key;
+        const cardCls = (key === 'working' || key === 'task_completed') ? ` ${key}` : '';
+
+        let extra = '';
+        if (key === 'working' && tool.current_task) {
+          extra += `<div class="tool-task" title="${escapeHtml(tool.current_task)}">⚙️ ${escapeHtml(tool.current_task)}</div>`;
+        }
+        if (tool.last_completed_at) {
+          const t = formatTime(tool.last_completed_at);
+          if (t) extra += `<div class="tool-meta">最近完成: ${t}</div>`;
+        }
+
+        html += `<div class="tool-card${cardCls}">
+          <span class="tool-icon">${tool.icon || '🔧'}</span>
+          <div class="tool-body">
+            <div class="tool-name-line">
+              <span class="tool-name">${escapeHtml(tool.name)}</span>
+              <span class="tool-status" style="color:${color};background:${color}1f;border:1px solid ${color}55">${label}</span>
+            </div>
+            ${extra}
+          </div>
+        </div>`;
+      }
+      listEl.innerHTML = html;
+
+      const workingCount = list.filter(t => t.status === 'working').length;
+      const runningCount = list.filter(t => t.status === 'idle' || t.status === 'working' || t.status === 'task_completed').length;
+      const footerText = anyWorking || workingCount
+        ? `🔶 ${workingCount} 个工具正在执行任务`
+        : (runningCount ? `已检测到 ${runningCount} 个运行中的工具` : '暂无工具运行');
+      document.getElementById('footer').textContent = footerText;
+    }
+
+    async function load() {
+      try {
+        const tools = await invoke('coding_tools_status', {});
+        if (tools && tools.length) {
+          render(tools, tools.some(t => t.status === 'working'));
+          return;
+        }
+        // 快照为空时主动轮询一次拿最新状态
+        const snap = await invoke('coding_tools_poll', {});
+        render(snap && snap.tools, snap && snap.any_working);
+      } catch (_) {
+        render(null, false);
+      }
+    }
+
+    // 订阅后台监控推送 (每 5 秒一次), 面板内容实时刷新
+    window.PetRuntime.listen('coding-monitor-snapshot', (event) => {
+      const snap = event && event.payload;
+      if (snap && snap.tools) render(snap.tools, snap.any_working);
+    }).catch(() => {});
+
+    load();
+  </script>
+</body>
+</html>

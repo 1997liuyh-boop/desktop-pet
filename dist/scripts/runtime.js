@@ -143,6 +143,19 @@
         return { dx: 0, dy: 0, facingRight: true, graphType: 'default', walking: false };
       case 'sidehide_check':
         return { action: 'none' };
+      case 'coding_tools_poll':
+        return {
+          tools: [
+            { id: 'cursor', name: 'Cursor', icon: '🟢', status: 'not_installed', current_task: null, last_completed_at: null },
+            { id: 'claude_code', name: 'Claude Code', icon: '🟠', status: 'not_installed', current_task: null, last_completed_at: null },
+            { id: 'codex', name: 'Codex', icon: '🔵', status: 'not_installed', current_task: null, last_completed_at: null },
+            { id: 'gemini', name: 'Gemini CLI', icon: '🔷', status: 'not_installed', current_task: null, last_completed_at: null },
+          ],
+          any_working: false,
+          any_just_completed: [],
+        };
+      case 'coding_tools_status':
+        return [];
       default:
         throw new Error(`当前运行环境不支持 ${command}`);
     }

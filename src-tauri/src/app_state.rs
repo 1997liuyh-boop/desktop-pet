@@ -7,6 +7,7 @@ use crate::core::controller::Controller;
 use crate::systems::stats::Stats;
 use crate::systems::work::WorkSystem;
 use crate::systems::walk::WalkSystem;
+use crate::systems::coding_tools::CodingToolMonitor;
 use crate::logic::main_logic::MainLogic;
 
 pub struct AppState {
@@ -16,6 +17,7 @@ pub struct AppState {
     pub walk: Mutex<WalkSystem>,
     pub controller: Mutex<Controller>,
     pub logic: Mutex<MainLogic>,
+    pub coding_monitor: Mutex<CodingToolMonitor>,
 }
 
 impl AppState {
@@ -27,6 +29,7 @@ impl AppState {
             walk: Mutex::new(WalkSystem::new()),
             controller: Mutex::new(Controller::new()),
             logic: Mutex::new(MainLogic::new()),
+            coding_monitor: Mutex::new(CodingToolMonitor::new()),
         }
     }
 }
