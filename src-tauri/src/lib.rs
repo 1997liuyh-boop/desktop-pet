@@ -94,6 +94,7 @@ pub fn run() {
             commands::coding_tools_poll,
             commands::coding_tools_status,
             commands::coding_tools_start_monitor,
+            commands::pet_action_gift,
         ])
         .setup(|app| {
             use tauri::menu::{MenuBuilder, MenuItemBuilder};

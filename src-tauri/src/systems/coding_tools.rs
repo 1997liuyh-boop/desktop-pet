@@ -366,6 +366,7 @@ impl ProcessSnapshot {
     }
 
     /// node.exe 命令行中是否包含关键字 (claude / codex / gemini)
+    /// 过滤：带 --stdio 参数的进程是 MCP server，不算用户主动运行的 CLI 工具
     fn node_cmdline_contains(&mut self, keyword: &str) -> bool {
         if !self.has("node.exe") {
             return false;
@@ -381,7 +382,14 @@ impl ProcessSnapshot {
                 .unwrap_or_default();
             self.node_cmdlines = Some(text.to_lowercase());
         }
-        self.node_cmdlines.as_deref().map(|t| t.contains(keyword)).unwrap_or(false)
+        self.node_cmdlines.as_deref().map(|cmdlines| {
+            cmdlines.lines().any(|line| {
+                if !line.contains(keyword) { return false; }
+                // MCP server 进程用 --stdio 与宿主通信，排除以避免误判
+                if line.contains("--stdio") { return false; }
+                true
+            })
+        }).unwrap_or(false)
     }
 }
 
@@ -421,9 +429,7 @@ fn is_codex_installed() -> bool {
     if let Ok(appdata) = std::env::var("APPDATA") {
         if PathBuf::from(&appdata).join("npm").join("codex.cmd").exists() { return true; }
     }
-    if let Ok(home) = std::env::var("USERPROFILE") {
-        if PathBuf::from(&home).join(".codex").is_dir() { return true; }
-    }
+    // 不以 .codex 目录是否存在作为安装判据：MCP 插件也会创建该目录，会造成误判
     false
 }
 

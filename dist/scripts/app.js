@@ -25,6 +25,29 @@ const CHATTER_TOPICS = [
   '什么是真正的快乐', '星星和灯光哪个更好看', '如果能变成一朵云',
   '记忆里最香的味道', '一首适合现在的歌', '慢慢变好这件事',
 ];
+// VPet SayRnd 对标：按心情分类的静态随机台词池
+const SAY_RND_INTERVAL_MS = 75000;
+const SAY_RND_POOL = {
+  happy: [
+    '今天真是个好日子喵~', '心情超好！想到处跑！', '嘿嘿，主人在吗~',
+    '阳光好暖！', '想唱歌！', '好饱好幸福喵~', '今天的一切都刚刚好！',
+    '呼噜呼噜……', '嗯～好满足哦。', '有你陪着我真好！',
+  ],
+  normal: [
+    '……嗯。', '在想一件事。', '主人，你还在吗？',
+    '风好像变了。', '该吃点什么呢……', '有点无聊喵。',
+    '伸个大懒腰～', '静静地待着也不错。', '嗯嗯……',
+  ],
+  poorCondition: [
+    '唔……有点累了。', '身体有点沉……', '想睡觉。',
+    '能帮我拿点吃的吗……', '不太舒服喵……', '喝点水好了……',
+    '今天真难熬。', '主人……', '有点不得劲……',
+  ],
+  ill: [
+    '呜……头好晕。', '好冷……', '需要休息一下。',
+    '主人……帮我一下……', '喵……身体不太好……', '发烧了吗……',
+  ],
+};
 const MOUSE_LONG_PRESS_MS = 300;
 const MOUSE_DRAG_THRESHOLD_PX = 3;
 const PROACTIVE_AI_MIN_MS = 20000;
@@ -729,6 +752,7 @@ class ToolBar {
     const items = [
       { label: '睡觉', action: () => this._handleSleep() },
       { label: '戳脸', action: () => { this.hide(); this.app._handlePinch(); } },
+      { label: '🎁 送礼物', action: () => { this.hide(); this.app._handleGift(); } },
       { label: '唱歌', action: () => this._showSingPrompt() },
       { label: '玩耍面板', action: () => this._showWorkPanel('play') },
       { label: '工作面板', action: () => this._showWorkPanel('work') },
@@ -838,7 +862,7 @@ class ToolBar {
   _showSystemSub(anchor) {
     this._showSubmenu(anchor, [
       { label: '⚙ 设置', action: () => { this.hide(); this.app.settingsUI.show(); } },
-      { label: '🚪 退出', action: () => { this.hide(); if (confirm('确定要退出桌宠吗？')) invoke('quit_app', {}); } },
+      { label: '🚪 退出', action: () => { this.hide(); if (confirm('确定要退出桌宠吗？')) this.app._doShutdown(); } },
     ]);
   }
 
@@ -1069,6 +1093,7 @@ class DesktopPetApp {
     this._musicTimer = null;
     this._chatterTimer = null;
     this._chatterBusy = false;
+    this._sayRndTimer = null;
     this._illCoughTimer = null;
     this._chatterTopicIndex = Math.floor(Math.random() * CHATTER_TOPICS.length);
     this._chatterHistory = [];  // 自动AI互动模式专用历史，用于防重复
@@ -1191,22 +1216,21 @@ class DesktopPetApp {
             }
             if (result.mood && result.mood !== this.mode && !this._manualAnimLock && !this._musicActive && !this._mischiefBusy) {
               const prevMode = this.mode;
-              this.mode = result.mood;
-              if (this.graphType === 'default') {
-                this.playAnimation('default', result.mood, null, { ambient: true });
-              }
-              // 进入/离开生病模式时启停咳嗽调度
-              if (result.mood === 'ill' && prevMode !== 'ill') {
-                this._startIllCough();
-              } else if (result.mood !== 'ill' && prevMode === 'ill') {
-                this._stopIllCough();
-              }
+              this._applyMoodChange(prevMode, result.mood, result.stats);
             }
           }
           if (result.completedWork?.message) this.showBubble(result.completedWork.message, 4000);
           if (result.leveledUp) {
             const lv = result.stats?.level;
-            this.showBubble(lv ? `升级啦！现在是 Lv.${lv}！` : '升级啦！', 3500);
+            const lvMsg = lv ? `升级啦！现在是 Lv.${lv}！` : '升级啦！';
+            if (this._hasAnimationGraph('levelup')) {
+              this.playAnimation('levelup', this.mode, () => {
+                this.showBubble(lvMsg, 3500);
+                this._returnToBaseState(this.mode);
+              }, { autoEndLoops: 1 });
+            } else {
+              this.showBubble(lvMsg, 3500);
+            }
           }
           // 心情变化通知 (60s 冷却, 不在工作/交互锁期间打断)
           if (result.mood && result.mood !== this._prevMood) {
@@ -1318,6 +1342,7 @@ class DesktopPetApp {
       this._musicTimer = setInterval(() => this._musicTick().catch(() => {}), MUSIC_POLL_MS);
       this._scheduleMischief();
       this._startChatter();
+      this._startSayRnd();
       // 4.8 如果启动时已是生病状态，立即开启咳嗽调度
       if (this.mode === 'ill') this._startIllCough();
 
@@ -1325,6 +1350,18 @@ class DesktopPetApp {
       this.lastTime = performance.now();
       this.lastFpsTime = this.lastTime;
       requestAnimationFrame((t) => this._gameLoop(t));
+
+      // 6. 开机动画：有 startup 则单次播放后切回默认待机（对标 VPet Load_4_Start）
+      if (this._manifestAnimations.has('startup')) {
+        const startupMode = this.mode;
+        this.playAnimation('startup', startupMode, () => {
+          this._returnToBaseState(startupMode);
+          // 开机动画结束后检测生日（延迟确保 startup 完全结束）
+          setTimeout(() => this._checkBirthday(), 500);
+        }, { autoEndLoops: 1 });
+      } else {
+        setTimeout(() => this._checkBirthday(), 1000);
+      }
 
     } catch (e) {
       this.statusRust.textContent = `Rust: ERROR ${e}`;
@@ -1820,6 +1857,38 @@ class DesktopPetApp {
     if (!this._chatterTimer) return;
     clearInterval(this._chatterTimer);
     this._chatterTimer = null;
+  }
+
+  // ── SayRnd 静态台词调度（对标 VPet SayRnd）──
+
+  _startSayRnd() {
+    if (this._sayRndTimer) clearInterval(this._sayRndTimer);
+    // 随机错开首次触发，避免与 chatter 同时触发
+    const jitter = 15000 + Math.random() * 30000;
+    this._sayRndTimer = setTimeout(() => {
+      this._tickSayRnd();
+      this._sayRndTimer = setInterval(() => this._tickSayRnd(), SAY_RND_INTERVAL_MS);
+    }, jitter);
+    window.addEventListener('beforeunload', () => {
+      clearTimeout(this._sayRndTimer);
+      clearInterval(this._sayRndTimer);
+    }, { once: true });
+  }
+
+  _tickSayRnd() {
+    if (!this._canAmbientAct()) return;
+    if (this._chatterBusy) return;
+    if (Math.random() > 0.6) return; // 40% 跳过，避免太频繁
+    const pool = SAY_RND_POOL[this.mode] || SAY_RND_POOL.normal;
+    const text = pool[Math.floor(Math.random() * pool.length)];
+    const sayMode = this.mode;
+    if (this._hasAnimationGraph('say')) {
+      this.playAnimation('say', sayMode, () => {
+        this._returnToBaseState(sayMode);
+      }, { autoEndLoops: 1 });
+    }
+    this.showBubble(text, 2800);
+    if (!this._isSpeechBusy()) this._ttsSpeak(text).catch(() => {});
   }
 
   // ── 生病咳嗽调度 ──
@@ -2980,7 +3049,8 @@ class DesktopPetApp {
     if (Math.random() > 0.45) return;
 
     this._mischiefBusy = true;
-    const actions = ['nudge', 'animate', 'peek'];
+    // state 特殊姿势约10%概率触发（对标 VPet StateONE/TWO 特殊待机）
+    const actions = ['nudge', 'animate', 'peek', ...(Math.random() < 0.22 ? ['stateIdle'] : [])];
     const action = actions[Math.floor(Math.random() * actions.length)];
     this._recordInteraction('mischief', { label: action, mood: 'playful', duration: 0 });
 
@@ -2993,6 +3063,7 @@ class DesktopPetApp {
       });
       if (action === 'nudge') await this._runMischiefNudge({ say: false });
       else if (action === 'peek') await this._runMischiefPeek({ say: false });
+      else if (action === 'stateIdle') await this._runMischiefStateIdle();
       else await this._runMischiefAnimation({ say: false });
     } finally {
       setTimeout(() => { this._mischiefBusy = false; }, 1200);
@@ -3026,6 +3097,79 @@ class DesktopPetApp {
     const graph = this._pickAmbientGraph(['touch_body', 'touch_head', 'think', 'switch', 'playone']);
     if (options.say !== false) this.showBubble('刚刚不是我动的。', 1600);
     await this.playAnimation(graph, 'happy', null, { ambient: true });
+  }
+
+  // 随机切换到特殊待机姿势（对标 VPet StateONE/StateTWO）
+  async _runMischiefStateIdle() {
+    const graph = this._pickAmbientGraph(['stateone', 'statetwo', 'state', 'idle']);
+    if (graph === 'default') return;
+    await this.playAnimation(graph, this.mode, () => {
+      this._returnToBaseState(this.mode);
+    }, { autoEndLoops: 2, ambient: true });
+  }
+
+  // 生日检测：对标 VPet HostBDay，生日当天播 bday 动画并庆祝
+  async _checkBirthday() {
+    try {
+      const s = await invoke('get_pet_status', {});
+      if (!s.isBirthday) return;
+      const bdayMode = this.mode;
+      const bdayMsg = `今天是我的生日！🎂 谢谢主人陪着我！`;
+      if (this._hasAnimationGraph('bday')) {
+        this.playAnimation('bday', bdayMode, () => {
+          this.showBubble(bdayMsg, 5000);
+          if (!this._isSpeechBusy()) this._ttsSpeak(bdayMsg).catch(() => {});
+          this._returnToBaseState(bdayMode);
+        }, { autoEndLoops: 2 });
+      } else {
+        this.showBubble(bdayMsg, 5000);
+      }
+    } catch (e) {
+      console.warn('生日检测失败:', e);
+    }
+  }
+
+  // 退出序列：先播 shutdown 动画，再真正关闭（对标 VPet Shutdown GraphType）
+  _doShutdown() {
+    if (this._hasAnimationGraph('shutdown')) {
+      this.playAnimation('shutdown', this.mode, () => {
+        invoke('quit_app', {});
+      }, { autoEndLoops: 1, force: true });
+    } else {
+      invoke('quit_app', {});
+    }
+  }
+
+  // 心情切换：先播 switch 过渡动画，再切模式（对标 VPet PlaySwitchAnimat）
+  _applyMoodChange(prevMode, newMode, stats) {
+    const modeRank = { happy: 0, normal: 1, poorCondition: 2, ill: 3 };
+    const prev = modeRank[prevMode] ?? 1;
+    const next = modeRank[newMode] ?? 1;
+
+    // 根据属性低值判断触发原因（对标 VPet Switch_Hunger/Thirsty）
+    const hunger = stats?.hunger ?? 100;
+    const thirst = stats?.thirst ?? 100;
+    let switchGraph;
+    if (next > prev) {
+      switchGraph = hunger < 20 ? 'switch_hunger' : thirst < 20 ? 'switch_thirsty' : 'switch_down';
+    } else {
+      switchGraph = 'switch_up';
+    }
+
+    const doSwitch = () => {
+      this.mode = newMode;
+      if (newMode === 'ill' && prevMode !== 'ill') this._startIllCough();
+      else if (newMode !== 'ill' && prevMode === 'ill') this._stopIllCough();
+      this.playAnimation('default', newMode, null, { ambient: true });
+    };
+
+    if (this._hasAnimationGraph(switchGraph)) {
+      this.playAnimation(switchGraph, prevMode, doSwitch, { autoEndLoops: 1, ambient: true });
+    } else if (this._hasAnimationGraph('switch_down') && next > prev) {
+      this.playAnimation('switch_down', prevMode, doSwitch, { autoEndLoops: 1, ambient: true });
+    } else {
+      doSwitch();
+    }
   }
 
   _applyInteractionResult(result, fallbackMood = 'normal') {
@@ -4290,6 +4434,12 @@ class DesktopPetApp {
     } catch(e) { this.playAnimation('default', 'happy'); }
   }
 
+  async _handleGift() {
+    // 打开食物面板（礼物分类），选择后由 food-selected 事件驱动 _handleEatFood
+    try { await invoke('open_food_panel', { filter: 'gift' }); }
+    catch (_) { this.showBubble('礼物面板打不开...', 2000); }
+  }
+
   async _handlePinch() {
     this._recordInteraction('pinch', { part: 'head', duration: 1600 });
     try {
@@ -4444,7 +4594,7 @@ class DesktopPetApp {
       if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
       return;
     }
-    if (this._dragging || this._manualSleepMode || this._manualAnimLock) {
+    if (this._dragging || this._manualSleepMode) {
       if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, dropFromTop: false });
       return;
     }
@@ -4452,15 +4602,7 @@ class DesktopPetApp {
       if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
       return;
     }
-    if (performance.now() < this._chatActiveUntil) {
-      if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
-      return;
-    }
-    // 聊天进行中不移动
-    if (this.chatUI && this.chatUI._isSending) {
-      if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
-      return;
-    }
+    // 手动动画锁/聊天期间不阻断位移，仅在拿到 walk_tick 结果后跳过动画更新
     // 工作中不移动 — 否则走路动画会覆盖工作动画
     if (this._wasWorking) {
       if (this._edgeClimbActive) {
@@ -4542,11 +4684,9 @@ class DesktopPetApp {
         invoke('get_screen_info', {}),
       ]);
 
-      if (this._dragging || this._manualSleepMode || this._manualAnimLock) return;
+      if (this._dragging || this._manualSleepMode) return;
       if (performance.now() < this._walkPauseUntil) return;
       if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;
-      if (performance.now() < this._chatActiveUntil) return;
-      if (this.chatUI && this.chatUI._isSending) return;
 
       const bounds = this._screenBounds(screen, pos);
       const visibleBounds = this._visiblePetBoundsPx(pos);
@@ -4568,10 +4708,12 @@ class DesktopPetApp {
         screenH: Math.max(1, Math.round(bounds.workHeight)),
       });
 
-      if (this._dragging || this._manualSleepMode || this._manualAnimLock) return;
-      if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;
-
       // 位移已在 Rust 端 walk_tick 内直接应用，前端只负责动画
+      // 手动动画锁 / 聊天气泡显示中：跳过动画切换，但不阻断位移
+      if (this._dragging || this._manualSleepMode) return;
+      if (this._manualAnimLock || performance.now() < this._chatActiveUntil
+          || (this.chatUI && this.chatUI._isSending)) return;
+      if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;
 
       if (result.edgeHit) {
         const nextPos = {

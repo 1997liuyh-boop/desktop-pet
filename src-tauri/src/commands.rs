@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Manager;
-use crate::systems::stats::StatsData;
+use crate::systems::stats::{StatsData, unix_to_month_day};
 use crate::systems::extras::{PetSettings, ScheduleItem};
 use crate::ai::persona::PersonaSystem;
 use crate::ai::llm_client::{LLMConfig, ChatMessage, chat_stream as llm_chat_stream};
@@ -612,6 +612,31 @@ pub fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+/// 送礼物 — 大幅提升心情/好感度（对标 VPet Gift 食物类型）
+#[tauri::command]
+pub fn pet_action_gift(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let mut core = state.core.lock().map_err(|e| e.to_string())?;
+    let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+    let mut work = state.work.lock().map_err(|e| e.to_string())?;
+
+    if work.is_active {
+        work.stop();
+    }
+
+    stats.data.receive_gift();
+    stats.data.mark_interaction();
+    core.set_state(PetState::Idle);
+    core.current_graph_type = "gift".into();
+    core.set_action_lock(4.0);
+
+    Ok(serde_json::json!({
+        "graphType": "gift",
+        "mood": stats.get_mood(),
+        "showBubble": "谢谢你送我礼物！好开心！",
+        "stats": stats_json(&stats.data),
+    }))
+}
+
 /// 辅助窗口(聊天/设置)是否可见 �?用于暂停 SideHide, 防止聊天时宠物被滑出屏幕
 #[tauri::command]
 pub fn aux_window_visible(app: tauri::AppHandle) -> Result<bool, String> {
@@ -952,12 +977,26 @@ pub fn get_pet_status(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_js
     let stats = state.stats.lock().map_err(|e| e.to_string())?;
     let work = state.work.lock().map_err(|e| e.to_string())?;
 
+    // 生日检测：宠物创建日期的月/日与今天对比
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let (today_m, today_d) = unix_to_month_day(now_ts);
+    let is_birthday = if stats.data.created_at > 0 {
+        let (born_m, born_d) = unix_to_month_day(stats.data.created_at);
+        born_m == today_m && born_d == today_d
+    } else {
+        false
+    };
+
     Ok(serde_json::json!({
         "state": format!("{:?}", core.state),
         "mood": stats.get_mood(),
         "graphType": core.current_graph_type,
         "stats": stats_json(&stats.data),
         "work": work_status_json(&work),
+        "isBirthday": is_birthday,
     }))
 }
 
@@ -1739,7 +1778,13 @@ pub fn open_food_panel(app: tauri::AppHandle, filter: Option<String>) -> Result<
         "window.__shopMode = false; window.__foodFilter = {}; var el=document.getElementById('food-list'); if(el)el.innerHTML=''; var em=document.getElementById('empty-msg'); if(em)em.style.display='none'; if(typeof init==='function')init();",
         filter_json
     ));
-    let _ = win.set_title("投喂");
+    let title = match filter.as_deref() {
+        Some("gift")     => "🎁 送礼物",
+        Some("medicine") => "💊 药品",
+        Some("drink")    => "🥤 饮品",
+        _                => "投喂",
+    };
+    let _ = win.set_title(title);
     let _ = win.show();
     let _ = win.set_focus();
     Ok(())
