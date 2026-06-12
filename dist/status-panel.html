@@ -11,10 +11,39 @@
       color: #e0e0e0;
       font-family: "Microsoft YaHei", -apple-system, sans-serif;
       font-size: 13px;
-      padding: 14px 16px 18px;
-      overflow-y: auto;
+      padding: 0;
+      overflow: hidden;
       height: 100vh;
+      display: flex;
+      flex-direction: column;
     }
+
+    /* 标签栏 */
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+      background: rgba(0,0,0,0.25);
+      flex-shrink: 0;
+    }
+    .tab {
+      flex: 1;
+      text-align: center;
+      padding: 10px 0;
+      font-size: 12px;
+      color: #999;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .tab:hover { color: #ccc; }
+    .tab.active { color: #fff; border-bottom-color: #818cf8; }
+
+    .view {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px 16px 18px;
+    }
+    .view[hidden] { display: none; }
 
     /* 顶部：名字 + 等级 + 金币 */
     .header {
@@ -42,11 +71,7 @@
     .mood-text { flex: 1; }
     .mood-label { font-size: 14px; font-weight: bold; line-height: 1.2; }
     .mood-sub { font-size: 10px; color: #888; margin-top: 3px; }
-    .mood-dot {
-      width: 9px; height: 9px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
+    .mood-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 
     /* 经验条 */
     .section-label {
@@ -57,13 +82,7 @@
       color: #888;
     }
     .exp-val { color: #a78bfa; }
-    .bar-wrap {
-      height: 5px;
-      background: rgba(255,255,255,0.1);
-      border-radius: 3px;
-      overflow: hidden;
-      margin-bottom: 14px;
-    }
+    .bar-wrap { height: 5px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden; margin-bottom: 14px; }
     .bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
 
     /* 属性行 */
@@ -74,7 +93,6 @@
     .stat-bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
     .stat-pct { width: 32px; text-align: right; font-size: 11px; flex-shrink: 0; }
 
-    /* 底部信息行 */
     .info-row {
       display: flex;
       justify-content: space-between;
@@ -87,12 +105,53 @@
     .info-val { color: #ccc; }
     .info-val.pink { color: #f9a8d4; font-weight: bold; }
 
+    /* 统计 */
+    .stat-group-title { font-size: 12px; color: #ffcf8a; margin: 12px 0 6px; font-weight: bold; }
+    .stat-group-title:first-child { margin-top: 0; }
+    .kv-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 12px; }
+    .kv-row .k { color: #aaa; }
+    .kv-row .v { color: #e6e6e6; font-weight: 600; }
+
+    /* 背包 */
+    .inv-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 10px; margin: 4px 0; border-radius: 8px;
+      background: rgba(255,255,255,0.05);
+    }
+    .inv-info { flex: 1; min-width: 0; }
+    .inv-name { font-size: 13px; color: #fff; font-weight: 600; }
+    .inv-eff { font-size: 10px; color: #9aa0aa; margin-top: 3px; }
+    .inv-count { font-size: 11px; color: #8be9fd; flex-shrink: 0; }
+    .inv-use {
+      border: 0; background: rgba(129,140,248,0.3); color: #d7dbff;
+      border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+      font-family: inherit; flex-shrink: 0;
+    }
+    .inv-use:hover { background: rgba(129,140,248,0.5); }
+
+    /* 日志 */
+    .log-item { padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 12px; line-height: 1.4; }
+    .log-time { font-size: 10px; color: #777; margin-right: 6px; }
+    .log-kind { font-size: 10px; color: #ffcf8a; margin-right: 6px; }
+    .log-text { color: #ddd; }
+
     .loading { text-align: center; padding: 40px 0; color: #555; font-size: 12px; }
     .error-msg { text-align: center; padding: 40px 0; color: #f87171; font-size: 12px; }
+    .empty { text-align: center; padding: 40px 0; color: #666; font-size: 12px; }
   </style>
 </head>
 <body>
-  <div id="content"><div class="loading">加载中…</div></div>
+  <div class="tabs">
+    <div class="tab active" data-tab="status">状态</div>
+    <div class="tab" data-tab="stats">统计</div>
+    <div class="tab" data-tab="inventory">背包</div>
+    <div class="tab" data-tab="log">日志</div>
+  </div>
+
+  <div class="view" id="view-status"><div class="loading">加载中…</div></div>
+  <div class="view" id="view-stats" hidden><div class="loading">加载中…</div></div>
+  <div class="view" id="view-inventory" hidden><div class="loading">加载中…</div></div>
+  <div class="view" id="view-log" hidden><div class="loading">加载中…</div></div>
 
   <script src="scripts/runtime.js"></script>
   <script>
@@ -108,47 +167,52 @@
       ill:          'rgba(248,113,113,0.14)',
     };
 
-    function statColor(pct) {
-      return pct > 60 ? '#4ade80' : pct > 30 ? '#facc15' : '#f87171';
-    }
+    function statColor(pct) { return pct > 60 ? '#4ade80' : pct > 30 ? '#facc15' : '#f87171'; }
 
     function statRow(label, val) {
       const pct = Math.max(0, Math.min(100, Math.round(val)));
       const c   = statColor(pct);
       return `<div class="stat-row">
         <span class="stat-name">${label}</span>
-        <div class="stat-bar-wrap">
-          <div class="stat-bar-fill" style="width:${pct}%;background:${c}"></div>
-        </div>
+        <div class="stat-bar-wrap"><div class="stat-bar-fill" style="width:${pct}%;background:${c}"></div></div>
         <span class="stat-pct" style="color:${c}">${pct}%</span>
       </div>`;
     }
 
-    async function load() {
+    function fmtDuration(secs) {
+      const s = Math.max(0, Math.floor(Number(secs) || 0));
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      if (h > 0) return `${h} 小时 ${m} 分`;
+      if (m > 0) return `${m} 分 ${s % 60} 秒`;
+      return `${s} 秒`;
+    }
+
+    function kv(k, v) { return `<div class="kv-row"><span class="k">${k}</span><span class="v">${v}</span></div>`; }
+
+    async function loadStatus() {
       try {
         const [status, config] = await Promise.all([
           invoke('get_pet_status', {}),
           invoke('load_llm_config', {}).catch(() => null),
         ]);
-        const s        = status.stats;
-        const mood     = status.mood || 'normal';
-        const petName  = config?.pet_name || '小橘';
+        const s = status.stats;
+        const mood = status.mood || 'normal';
+        const petName = config?.pet_name || '小橘';
         const moodColor = MOOD_COLORS[mood] || '#94a3b8';
 
-        // 等级 & 经验 (VPet 公式: LevelUpNeed = 200*lv - 100)
-        const lv         = s.level;
-        const expFloor   = Math.pow((lv - 1) * 10, 2);
-        const expCeil    = Math.pow(lv * 10, 2);
+        const lv = s.level;
+        const expFloor = Math.pow((lv - 1) * 10, 2);
+        const expCeil = Math.pow(lv * 10, 2);
         const expInLevel = Math.round(s.exp - expFloor);
-        const expToNext  = expCeil - expFloor;
-        const expPct     = Math.min(100, Math.round(expInLevel / expToNext * 100));
+        const expToNext = expCeil - expFloor;
+        const expPct = Math.min(100, Math.round(expInLevel / expToNext * 100));
 
-        document.getElementById('content').innerHTML = `
+        document.getElementById('view-status').innerHTML = `
           <div class="header">
             <span class="header-name">${petName}  &nbsp;<span style="font-size:12px;color:#94a3b8;font-weight:normal">Lv.${lv}</span></span>
             <span class="header-money">💰 ${s.money.toFixed(0)} 金币</span>
           </div>
-
           <div class="mood-card" style="background:${MOOD_BGS[mood]};border-color:${moodColor}44">
             <span class="mood-emoji">${MOOD_ICONS[mood] || '😐'}</span>
             <div class="mood-text">
@@ -157,15 +221,8 @@
             </div>
             <div class="mood-dot" style="background:${moodColor};box-shadow:0 0 8px ${moodColor}"></div>
           </div>
-
-          <div class="section-label">
-            <span>经验值</span>
-            <span class="exp-val">${expInLevel} / ${expToNext}</span>
-          </div>
-          <div class="bar-wrap">
-            <div class="bar-fill" style="width:${expPct}%;background:#818cf8"></div>
-          </div>
-
+          <div class="section-label"><span>经验值</span><span class="exp-val">${expInLevel} / ${expToNext}</span></div>
+          <div class="bar-wrap"><div class="bar-fill" style="width:${expPct}%;background:#818cf8"></div></div>
           <div class="stat-list">
             ${statRow('体力', s.energy)}
             ${statRow('心情', s.happiness)}
@@ -173,16 +230,120 @@
             ${statRow('口渴', s.thirst)}
             ${statRow('健康', s.health)}
           </div>
-
-          <div class="info-row">
-            <span>好感度</span>
-            <span class="info-val pink">${Math.round(s.likability ?? 0)} ❤</span>
-          </div>
+          <div class="info-row"><span>好感度</span><span class="info-val pink">${Math.round(s.likability ?? 0)} ❤</span></div>
         `;
       } catch (e) {
-        document.getElementById('content').innerHTML = '<div class="error-msg">加载失败</div>';
+        document.getElementById('view-status').innerHTML = '<div class="error-msg">加载失败</div>';
       }
     }
+
+    async function loadStats() {
+      try {
+        const s = await invoke('get_statistics', {});
+        document.getElementById('view-stats').innerHTML = `
+          <div class="stat-group-title">时长</div>
+          ${kv('总在线', fmtDuration(s.total_online_secs))}
+          ${kv('工作', fmtDuration(s.work_secs))}
+          ${kv('学习', fmtDuration(s.study_secs))}
+          ${kv('玩耍', fmtDuration(s.play_secs))}
+          ${kv('睡眠', fmtDuration(s.sleep_secs))}
+          ${kv('发呆', fmtDuration(s.idle_secs))}
+          <div class="stat-group-title">互动</div>
+          ${kv('摸头', s.touch_head_count)}
+          ${kv('摸身体', s.touch_body_count)}
+          ${kv('戳脸', s.pinch_count)}
+          ${kv('拖拽', s.drag_count)}
+          ${kv('跳舞', s.dance_count)}
+          ${kv('说话', s.talk_count)}
+          ${kv('喂食', s.feed_count)}
+          ${kv('喝水', s.drink_count)}
+          ${kv('送礼', s.gift_count)}
+          <div class="stat-group-title">成长 / 经济</div>
+          ${kv('完成工作', s.work_done_count + ' 次')}
+          ${kv('升级', s.level_up_count + ' 次')}
+          ${kv('累计赚取', (s.money_earned || 0).toFixed(0) + ' 金币')}
+          ${kv('累计消费', (s.money_spent || 0).toFixed(0) + ' 金币')}
+          ${kv('移动距离', Math.round(s.move_distance || 0) + ' px')}
+        `;
+      } catch (e) {
+        document.getElementById('view-stats').innerHTML = '<div class="error-msg">加载失败</div>';
+      }
+    }
+
+    async function loadInventory() {
+      const el = document.getElementById('view-inventory');
+      try {
+        const data = await invoke('get_inventory', {});
+        const items = (data && data.items) ? data.items : [];
+        if (!items.length) { el.innerHTML = '<div class="empty">背包是空的，去商店逛逛吧~</div>'; return; }
+        el.innerHTML = '';
+        items.forEach(it => {
+          const row = document.createElement('div');
+          row.className = 'inv-item';
+          const parts = [];
+          if (it.strengthFood) parts.push(`饱腹+${it.strengthFood}`);
+          if (it.strengthDrink) parts.push(`口渴+${it.strengthDrink}`);
+          if (it.feeling) parts.push(`心情+${it.feeling}`);
+          if (it.likability) parts.push(`好感+${it.likability}`);
+          if (it.health) parts.push(`健康+${it.health}`);
+          const eff = it.graph === 'gift' ? '礼物 · ' + (parts.join(' ') || '增进好感') : (parts.join(' ') || '无属性');
+          row.innerHTML = `
+            <div class="inv-info">
+              <div class="inv-name">${it.name} <span class="inv-count">×${it.count}</span></div>
+              <div class="inv-eff">${eff}</div>
+            </div>`;
+          const btn = document.createElement('button');
+          btn.className = 'inv-use';
+          btn.textContent = it.graph === 'gift' ? '赠送' : '使用';
+          btn.addEventListener('click', () => {
+            window.PetRuntime.emit('inventory-use', { name: it.name }).catch(() => {});
+            setTimeout(loadInventory, 600);
+          });
+          row.appendChild(btn);
+          el.appendChild(row);
+        });
+      } catch (e) {
+        el.innerHTML = '<div class="error-msg">加载失败</div>';
+      }
+    }
+
+    async function loadLog() {
+      const el = document.getElementById('view-log');
+      try {
+        const log = await invoke('get_activity_log', { limit: 80 });
+        if (!log || !log.length) { el.innerHTML = '<div class="empty">还没有活动记录</div>'; return; }
+        el.innerHTML = '';
+        const KIND_LABELS = { work: '工作', study: '学习', play: '玩耍', schedule: '日程', shop: '商店', inventory: '背包', level: '升级', sleep: '睡眠', system: '系统' };
+        log.forEach(e => {
+          const d = new Date((e.ts || 0) * 1000);
+          const hh = String(d.getHours()).padStart(2, '0');
+          const mm = String(d.getMinutes()).padStart(2, '0');
+          const item = document.createElement('div');
+          item.className = 'log-item';
+          item.innerHTML = `<span class="log-time">${hh}:${mm}</span><span class="log-kind">[${KIND_LABELS[e.kind] || e.kind}]</span><span class="log-text">${e.text}</span>`;
+          el.appendChild(item);
+        });
+      } catch (e) {
+        el.innerHTML = '<div class="error-msg">加载失败</div>';
+      }
+    }
+
+    const LOADERS = { status: loadStatus, stats: loadStats, inventory: loadInventory, log: loadLog };
+    let currentTab = 'status';
+
+    function switchTab(name) {
+      currentTab = name;
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+      document.querySelectorAll('.view').forEach(v => { v.hidden = v.id !== 'view-' + name; });
+      (LOADERS[name] || loadStatus)();
+    }
+
+    document.querySelectorAll('.tab').forEach(t => {
+      t.addEventListener('click', () => switchTab(t.dataset.tab));
+    });
+
+    // 由 Rust open_status_panel 调用
+    function load() { switchTab(currentTab); }
 
     load();
   </script>

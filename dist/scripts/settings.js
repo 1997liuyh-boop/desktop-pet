@@ -42,9 +42,51 @@ async function loadConfig() {
 
     const hasTtsKey = await invoke('has_tts_api_key', {}).catch(() => false);
     document.getElementById('ttsApiKey').placeholder = hasTtsKey ? '已配置（重新输入可更新）' : '留空则不启用语音合成';
+
+    // 加载桌宠设置
+    await loadPetSettings();
   } catch (e) {
     showStatus('加载配置失败: ' + e, true);
   }
+}
+
+function bindRange(id, valId, fmt) {
+  const el = document.getElementById(id);
+  const valEl = document.getElementById(valId);
+  const update = () => { valEl.textContent = fmt(parseFloat(el.value)); };
+  el.addEventListener('input', update);
+  return update;
+}
+
+async function loadPetSettings() {
+  try {
+    const s = await invoke('get_settings', {}).catch(() => null);
+    if (!s) return;
+    document.getElementById('scale').value = s.scale ?? 1;
+    document.getElementById('opacity').value = s.opacity ?? 1;
+    document.getElementById('volume').value = s.volume ?? 1;
+    document.getElementById('alwaysOnTop').checked = s.always_on_top !== false;
+    document.getElementById('enableMovement').checked = s.enable_movement !== false;
+    document.getElementById('enableDataCalc').checked = s.enable_data_calc !== false;
+    const pct = (v) => `${Math.round(v * 100)}%`;
+    bindRange('scale', 'scaleVal', pct)();
+    bindRange('opacity', 'opacityVal', pct)();
+    bindRange('volume', 'volumeVal', pct)();
+  } catch (_) {}
+}
+
+async function savePetSettings() {
+  const settings = {
+    scale: parseFloat(document.getElementById('scale').value) || 1,
+    opacity: parseFloat(document.getElementById('opacity').value) || 1,
+    volume: parseFloat(document.getElementById('volume').value),
+    always_on_top: document.getElementById('alwaysOnTop').checked,
+    enable_movement: document.getElementById('enableMovement').checked,
+    enable_auto_buy: false,
+    enable_data_calc: document.getElementById('enableDataCalc').checked,
+  };
+  if (isNaN(settings.volume)) settings.volume = 1;
+  await invoke('save_settings', { settings });
 }
 
 async function saveConfig() {
@@ -83,6 +125,9 @@ async function saveConfig() {
       document.getElementById('ttsApiKey').value = '';
       document.getElementById('ttsApiKey').placeholder = '已配置（重新输入可更新）';
     }
+
+    // 保存桌宠设置 (会触发宠物窗口实时应用)
+    await savePetSettings();
 
     showStatus('已保存');
     setTimeout(() => { showStatus(''); }, 2000);

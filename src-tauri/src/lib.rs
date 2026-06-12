@@ -66,8 +66,24 @@ pub fn run() {
             commands::open_work_panel,
             commands::open_status_panel,
             commands::open_monitor_panel,
+            commands::open_shop_panel,
+            commands::open_schedule_panel,
+            commands::set_pet_window_scale,
             commands::cheat_set_level,
             commands::cheat_set_stat,
+            commands::get_statistics,
+            commands::stat_increment,
+            commands::get_activity_log,
+            commands::log_event,
+            commands::get_shop_items,
+            commands::get_inventory,
+            commands::buy_item,
+            commands::use_inventory_item,
+            commands::get_schedule,
+            commands::set_schedule,
+            commands::set_schedule_enabled,
+            commands::get_settings,
+            commands::save_settings,
             commands::set_clickthrough,
             commands::aux_window_visible,
             commands::tts_speak,
@@ -106,7 +122,7 @@ pub fn run() {
                 .build(app)?;
 
             // 设置/聊天/面板窗口: 拦截关闭按钮, 改为隐藏而非销毁, 以便可再次打开
-            for label in ["settings", "chat", "food-panel", "work-panel", "status-panel", "monitor-panel"] {
+            for label in ["settings", "chat", "food-panel", "work-panel", "status-panel", "monitor-panel", "schedule-panel"] {
                 if let Some(win) = app.get_webview_window(label) {
                     let win_clone = win.clone();
                     win.on_window_event(move |event| {

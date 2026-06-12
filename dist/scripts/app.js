@@ -72,7 +72,8 @@ const GRAPH_TYPE_ALIASES = {
 };
 
 // ── TTS 音频播放 ──
-function playBase64Wav(base64, onEnded = null) {
+// onStarted 在音频真正开始播放(source.start)那一刻回调 — 用于让文字气泡与语音严格同步
+function playBase64Wav(base64, onEnded = null, onStarted = null) {
   let audioCtx = null;
   let source = null;
   let stopped = false;
@@ -106,9 +107,20 @@ function playBase64Wav(base64, onEnded = null) {
       if (stopped) { finish(); return; }
       source = audioCtx.createBufferSource();
       source.buffer = buffer;
-      source.connect(audioCtx.destination);
+      const vol = typeof window.__petVolume === 'number' ? Math.max(0, Math.min(1, window.__petVolume)) : 1;
+      if (vol >= 0.999) {
+        source.connect(audioCtx.destination);
+      } else {
+        const gain = audioCtx.createGain();
+        gain.gain.value = vol;
+        source.connect(gain);
+        gain.connect(audioCtx.destination);
+      }
       source.onended = finish;
       source.start(0);
+      if (typeof onStarted === 'function') {
+        try { onStarted(); } catch (_) {}
+      }
     };
     const decode = () => {
       audioCtx.decodeAudioData(bytes.buffer.slice(0), doPlay,
@@ -684,6 +696,7 @@ class ToolBar {
       { label: '全部投喂', action: () => this._showFoodMenu() },
       { label: '随机吃', action: () => { this.hide(); this.app._handleFeed(); } },
       { label: '随机喝', action: () => { this.hide(); this.app._handleDrink(); } },
+      { label: '🛒 商店', action: () => { this.hide(); invoke('open_shop_panel', {}).catch(() => this.app.showBubble('商店打不开...', 1500)); } },
     ];
     // 生病时才显示药品入口
     if (this.app.mode === 'ill') {
@@ -723,6 +736,7 @@ class ToolBar {
     if (this.app._wasWorking) {
       items.push({ label: '停止任务', action: () => { this.hide(); this.app._handleStopWork(); } });
     }
+    items.push({ label: '📅 日程表', action: () => { this.hide(); invoke('open_schedule_panel', {}).catch(() => this.app.showBubble('日程表打不开...', 1500)); } });
     items.push({ label: '聊天', action: () => { this.hide(); this.app._openChat(); } });
     this._showSubmenu(anchor, items);
   }
@@ -1264,6 +1278,16 @@ class DesktopPetApp {
         }
       }).catch(() => {});
 
+      // 监听背包"使用物品", 在宠物上播放对应动画
+      window.PetRuntime.listen('inventory-use', (e) => {
+        if (e.payload && e.payload.name) this._handleUseInventory(e.payload.name);
+      }).catch(() => {});
+
+      // 监听设置变更, 实时应用 (不透明度/音量/移动/缩放/置顶)
+      window.PetRuntime.listen('settings-changed', () => {
+        this._loadAndApplySettings().catch(() => {});
+      }).catch(() => {});
+
       // 监听工作面板选择, 在宠物上播放工作动画
       window.PetRuntime.listen('work-selected', (e) => {
         if (e.payload) {
@@ -1280,6 +1304,9 @@ class DesktopPetApp {
       invoke('cheat_set_level', { level: 30 }).then((r) => {
         console.log('[Pet]: 等级已设为', r.level);
       }).catch(() => {});
+
+      // 应用持久化设置 (不透明度/音量/移动/缩放/置顶)
+      this._loadAndApplySettings().catch(() => {});
 
       // 4.5 自主行走 — 每 120ms tick 一次
       this._walkTimer = setInterval(() => this._walkTick(), 120);
@@ -1655,7 +1682,23 @@ class DesktopPetApp {
     }
   }
 
+  _bumpStat(kind, amount = 1) {
+    try { invoke('stat_increment', { kind, amount }).catch(() => {}); } catch (_) {}
+  }
+
+  _bumpInteractionStat(type, part) {
+    let kind = null;
+    if (type === 'touch') kind = part === 'head' ? 'touch_head' : 'touch_body';
+    else if (type === 'pinch') kind = 'pinch';
+    else if (type === 'drag') kind = 'drag';
+    else if (type === 'feed') kind = 'feed';
+    else if (type === 'drink') kind = 'drink';
+    else if (type === 'music') kind = 'dance';
+    if (kind) this._bumpStat(kind);
+  }
+
   _recordInteraction(type, detail = {}) {
+    this._bumpInteractionStat(type, detail.part);
     const now = performance.now();
     const prev = this._interactionStreak;
     const inSameStreak = prev.type === type && now - prev.lastAt < 6000;
@@ -1997,6 +2040,11 @@ class DesktopPetApp {
         return options.fallbackWhenUnavailable === false ? null : fallback;
       }
 
+      // 确认会真正调用 AI 之后再通知调用方 (用于让"思考点"只在真正请求 AI 时出现)
+      if (typeof options.onAiStart === 'function') {
+        try { options.onAiStart(); } catch (_) {}
+      }
+
       const [config, status, memorySummary] = await Promise.all([
         invoke('load_llm_config', {}),
         invoke('get_pet_status', {}).catch(() => ({})),
@@ -2069,12 +2117,25 @@ class DesktopPetApp {
   async _speakProactive(context = {}, options = {}) {
     const isChatter = (context.type === 'chatter');
     if (this._isSpeechBusy()) return null;
-    if (isChatter) this._startThinkingDots();
+    // 思考点只在真正调用 AI 时才显示 — 避免无 API Key / 被阻塞时出现 "...." 后空白
+    let dotsStarted = false;
+    const startDots = () => {
+      if (dotsStarted) return;
+      dotsStarted = true;
+      this._startThinkingDots();
+    };
     let speech = null;
     try {
-      speech = await this._resolveProactiveSpeech(context, options);
+      speech = await this._resolveProactiveSpeech(context, {
+        ...options,
+        onAiStart: isChatter ? startDots : options.onAiStart,
+      });
     } finally {
-      if (isChatter) this._stopThinkingDots(speech);
+      if (isChatter && dotsStarted) {
+        // 已经亮出思考点说明确实在请求 AI; 若 AI 没有产出则本地兜底, 绝不留下空气泡
+        speech = speech || this._fallbackChatterSpeech(context);
+        this._stopThinkingDots(speech);
+      }
     }
     if (!speech) return null;
     this._markProactiveAi(context.type || 'idle');
@@ -2156,28 +2217,39 @@ class DesktopPetApp {
         }
         return false;
       }
-      // 播放即将开始 — 通知调用方 (用于让文字气泡与语音同步出现)
-      if (typeof options.onStart === 'function') {
-        try { options.onStart(); } catch (_) {}
-      }
       let audio = null;
-      audio = playBase64Wav(base64Wav, () => {
+      const handleEnded = () => {
         if (this._ttsCurrentAudio === audio) this._ttsCurrentAudio = null;
         if (seq === this._ttsSeq && this._ttsActiveText === normalized) {
           this._ttsActiveText = '';
           this._ttsBusyUntil = 0;
         }
+      };
+      // 等音频真正开声那一刻再返回, 让 onStart(文字气泡) 与语音严格同步,
+      // 避免文字早到、声音因解码/恢复 AudioContext 延迟而迟到造成长间隔
+      const started = await new Promise((resolve) => {
+        let settled = false;
+        const settle = (val) => { if (settled) return; settled = true; resolve(val); };
+        // 安全兜底: 8s 内未开声(如无用户手势导致 AudioContext 挂起)则放弃等待
+        const timer = setTimeout(() => settle(false), 8000);
+        audio = playBase64Wav(
+          base64Wav,
+          () => { handleEnded(); clearTimeout(timer); settle(false); },
+          () => { clearTimeout(timer); settle(true); }
+        );
+        if (audio.closed) { clearTimeout(timer); settle(false); }
       });
-      if (audio.closed) {
-        if (seq === this._ttsSeq && this._ttsActiveText === normalized) {
-          this._ttsActiveText = '';
-          this._ttsBusyUntil = 0;
-        }
+
+      if (!started) {
+        handleEnded();
         return false;
-      } else {
-        this._ttsCurrentAudio = audio;
-        return true;
       }
+      // 开声成功 — 此刻通知调用方显示文字, 与语音同步
+      if (typeof options.onStart === 'function') {
+        try { options.onStart(); } catch (_) {}
+      }
+      this._ttsCurrentAudio = audio;
+      return true;
     } catch (e) {
       if (seq === this._ttsSeq && this._ttsActiveText === normalized) {
         this._ttsActiveText = '';
@@ -2312,6 +2384,7 @@ class DesktopPetApp {
       && (workBottom < screenBottom || workTop !== Math.round(Number(screen?.screenY ?? 0) || 0));
     const windowW = Math.max(0, Math.round(Number(pos?.width) || 0));
     const windowH = Math.max(0, Math.round(Number(pos?.height) || 0));
+    if (workHeight > 0) this._lastWorkHeight = workHeight;
     return {
       workLeft,
       workTop,
@@ -3089,6 +3162,14 @@ class DesktopPetApp {
   }
 
   showBubble(text, duration = 2500) {
+    const t = String(text || '').trim();
+    if (t.length >= 2 && !/^[.。·…\s]+$/.test(t) && duration > 0) {
+      const now = performance.now();
+      if (!this._lastTalkStatAt || now - this._lastTalkStatAt > 1500) {
+        this._lastTalkStatAt = now;
+        this._bumpStat('talk');
+      }
+    }
     this._clearBubble();
     const bubble = document.createElement('div');
     bubble.className = 'pet-bubble';
@@ -3600,7 +3681,10 @@ class DesktopPetApp {
       };
     }
 
-    const heavyRelease = canUseFall && (distance > 180 || releaseSpeed > 42 || totalDy > 95 || mood === 'ill');
+    // 仅当本次拖动距离超过屏幕工作区高度的 30% 才允许播放坠落动画 — 轻微拖动只做安全落地
+    const dropThreshold = Math.round((this._lastWorkHeight || 0) * GRAVITY_DROP_MIN_RATIO) || GRAVITY_DROP_MIN_HEIGHT_PX;
+    const draggedFarEnough = distance >= dropThreshold;
+    const heavyRelease = canUseFall && draggedFarEnough && (distance > 180 || releaseSpeed > 42 || totalDy > 95 || mood === 'ill');
     if (heavyRelease) {
       const slideDx = (direction === 'left' ? -1 : 1) * Math.max(26, Math.min(72, 22 + releaseSpeed * 1.1));
       const slideDy = Math.max(8, Math.min(24, Math.abs(totalDy) * 0.18 + releaseSpeed * 0.2));
@@ -3676,8 +3760,13 @@ class DesktopPetApp {
     const groundY = this._edgeFallBottomY(bounds, visibleBounds);
     let y = Math.round(Number(pos.y) || 0);
     const height = groundY - y;
+    // 触发坠落的判据改为"本次拖动距离" — 只有把宠物拖动超过屏幕工作区高度的 30% 才坠落,
+    // 这样把停在高处的宠物轻轻挪一下不会再演整套坠落动画
+    const dragDistance = Math.hypot(Number(this._dragTotalDx || 0), Number(this._dragTotalDy || 0));
     const minDrop = Math.round(bounds.workHeight * GRAVITY_DROP_MIN_RATIO) || GRAVITY_DROP_MIN_HEIGHT_PX;
-    if (!Number.isFinite(height) || height < minDrop) return false;
+    if (dragDistance < minDrop) return false;
+    // 拖动够远但已经贴近地面则无需坠落
+    if (!Number.isFinite(height) || height < EDGE_FALL_BOTTOM_SAFE_GAP_PX) return false;
 
     this.showBubble('哇哇哇——要掉下去了喵！', 1600);
     const side = direction === 'left' ? 'left' : 'right';
@@ -4033,9 +4122,69 @@ class DesktopPetApp {
     } catch(e) { this.showBubble(type === 'drink' ? '喝不了...' : '吃不了...', 2000); }
   }
 
+  // 使用背包物品 — 调后端 use_inventory_item (统计在后端计数), 播放对应动画
+  async _handleUseInventory(name) {
+    try {
+      const result = await invoke('use_inventory_item', { name });
+      if (!result || result.ok === false) {
+        this.showBubble(result?.message || '用不了这个物品...', 2000);
+        return;
+      }
+      this._wasWorking = false;
+      this._manualSleepMode = false;
+      this._manualAnimLock = false;
+      const graph = result.graphType || 'eat';
+      if (result.showBubble) this.showBubble(result.showBubble, 2800);
+      this._animatingLock = false;
+      await this.playAnimation(graph, result.mood || 'normal', () => {
+        this._animatingLock = false;
+        this._returnToIdle(result.mood || this.mode);
+      }, { foodImage: result.foodImage, autoEndLoops: 1 });
+    } catch (e) {
+      this.showBubble('用不了这个物品...', 2000);
+    }
+  }
+
+  // 读取并应用持久化设置
+  async _loadAndApplySettings() {
+    try {
+      const s = await invoke('get_settings', {});
+      if (!s) return;
+      this._petSettings = s;
+      // 音量
+      window.__petVolume = typeof s.volume === 'number' ? Math.max(0, Math.min(1, s.volume)) : 1;
+      // 移动开关
+      this._movementEnabled = s.enable_movement !== false;
+      // 不透明度
+      const container = document.getElementById('pet-container');
+      if (container) container.style.opacity = String(Math.max(0.3, Math.min(1, s.opacity ?? 1)));
+      // 缩放 (调整窗口尺寸, 画布按窗口自适应)
+      const scale = Math.max(0.6, Math.min(1.8, s.scale ?? 1));
+      if (Math.abs((this._appliedScale ?? 1) - scale) > 0.001) {
+        this._appliedScale = scale;
+        invoke('set_pet_window_scale', { scale }).catch(() => {});
+      }
+    } catch (_) {}
+  }
+
   _fallbackSingSpeech(songTitle) {
     const title = songTitle || '这首歌';
     return `啦啦啦~我把《${title}》唱成小小旋律，轻轻送到主人耳边。`;
+  }
+
+  // AI 自言自语兜底 — 仅在已请求 AI 但没拿到内容时使用, 避免气泡空白
+  _fallbackChatterSpeech() {
+    const lines = [
+      '嗯…我刚刚走神了，想到一些温柔的小事。',
+      '今天也要元气满满喵~',
+      '发会儿呆也挺好的，世界安安静静的。',
+      '主人在忙吗？陪我说说话好不好呀~',
+      '窗外的风好像在跟我打招呼呢。',
+      '我在想，待会儿要不要去散个步喵~',
+      '突然有点想喝热乎乎的东西了…',
+      '安静的时候，连呼吸都变得很可爱呢。',
+    ];
+    return lines[Math.floor(Math.random() * lines.length)];
   }
 
   async _handleSingRequest(songTitle) {
@@ -4290,6 +4439,11 @@ class DesktopPetApp {
 
   async _walkTick() {
     if (this._walkTickBusy || this._edgeTopDropActive) return;
+    // 设置中关闭了自主移动
+    if (this._movementEnabled === false) {
+      if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
+      return;
+    }
     if (this._dragging || this._manualSleepMode || this._manualAnimLock) {
       if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, dropFromTop: false });
       return;

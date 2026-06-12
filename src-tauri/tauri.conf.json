@@ -105,6 +105,20 @@
         "resizable": true,
         "visible": false,
         "center": true
+      },
+      {
+        "label": "schedule-panel",
+        "title": "日程表",
+        "width": 340,
+        "height": 500,
+        "url": "schedule-panel.html",
+        "transparent": false,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "resizable": true,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {

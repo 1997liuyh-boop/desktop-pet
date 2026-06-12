@@ -51,7 +51,7 @@
 </head>
 <body>
   <div class="header-row">
-    <h2>选择投喂项目</h2>
+    <h2 id="panel-title">选择投喂项目</h2>
     <span class="wallet" id="wallet-display">💰 --</span>
   </div>
   <div id="food-list"></div>
@@ -63,6 +63,7 @@
     const listEl = document.getElementById('food-list');
     const emptyEl = document.getElementById('empty-msg');
     const walletEl = document.getElementById('wallet-display');
+    const titleEl = document.getElementById('panel-title');
     let currentMoney = Infinity; // 加载前不限制
 
     function hideCurrentPanel() {
@@ -72,36 +73,58 @@
       }
     }
 
+    function updateWallet(money) {
+      currentMoney = Number(money ?? Infinity);
+      if (isFinite(currentMoney)) {
+        walletEl.textContent = `💰 ${currentMoney.toFixed(0)} 金币`;
+        walletEl.className = 'wallet' + (currentMoney < 20 ? ' low' : '');
+      }
+    }
+
+    function effectsText(it) {
+      const isMed = it.graph === 'medicine';
+      const parts = [];
+      if (isMed && it.health) {
+        parts.push(`🩺 健康+${it.health.toFixed(0)}`);
+      } else {
+        if (it.strengthFood) parts.push(`饱腹${it.strengthFood > 0 ? '+' : ''}${it.strengthFood}`);
+        if (it.strengthDrink) parts.push(`口渴${it.strengthDrink > 0 ? '+' : ''}${it.strengthDrink}`);
+        if (it.strength) parts.push(`体力${it.strength > 0 ? '+' : ''}${it.strength}`);
+        if (it.feeling) parts.push(`心情${it.feeling > 0 ? '+' : ''}${it.feeling}`);
+        if (it.health) parts.push(`健康${it.health > 0 ? '+' : ''}${it.health}`);
+        if (it.exp) parts.push(`经验${it.exp > 0 ? '+' : ''}${it.exp}`);
+        if (it.likability) parts.push(`好感${it.likability > 0 ? '+' : ''}${it.likability}`);
+      }
+      return parts.join('  ') || '无属性变化';
+    }
+
     async function init() {
+      const shopMode = window.__shopMode === true;
+      titleEl.textContent = shopMode ? '🛒 商店（购买入背包）' : '选择投喂项目';
       try {
         const filter = window.__foodFilter || null;
         listEl.innerHTML = '';
         emptyEl.style.display = 'none';
 
-        // 并行加载食物列表和当前金币
         const [data, status] = await Promise.all([
-          invoke('get_food_menu', {}),
+          invoke(shopMode ? 'get_shop_items' : 'get_food_menu', {}),
           invoke('get_pet_status', {}).catch(() => null),
         ]);
 
-        currentMoney = Number(status?.stats?.money ?? Infinity);
-        if (isFinite(currentMoney)) {
-          walletEl.textContent = `💰 ${currentMoney.toFixed(0)} 金币`;
-          walletEl.className = 'wallet' + (currentMoney < 20 ? ' low' : '');
-        }
+        updateWallet(status?.stats?.money ?? Infinity);
 
         const allItems = (data && data.items) ? data.items : [];
         const items = filter ? allItems.filter(it => it.graph === filter) : allItems;
 
         if (!items.length) { emptyEl.style.display = 'block'; return; }
 
-        // 按食物类型分组 — type 来自后端 FoodType（snake_case），旧数据无 type 时退回按 graph 分组
-        const TYPE_LABELS = { meal: '正餐', snack: '零食', drink: '饮品', functional: '功能性', drug: '药品' };
-        const TYPE_ORDER = ['正餐', '零食', '饮品', '功能性', '药品', '食物'];
+        // 按食物类型分组
+        const TYPE_LABELS = { meal: '正餐', snack: '零食', drink: '饮品', functional: '功能性', drug: '药品', gift: '礼物' };
+        const TYPE_ORDER = ['正餐', '零食', '饮品', '功能性', '药品', '礼物', '食物'];
         const groups = {};
         items.forEach(it => {
           const g = TYPE_LABELS[it.type]
-            || (it.graph === 'medicine' ? '药品' : it.graph === 'drink' ? '饮品' : '食物');
+            || (it.graph === 'gift' ? '礼物' : it.graph === 'medicine' ? '药品' : it.graph === 'drink' ? '饮品' : '食物');
           if (!groups[g]) groups[g] = [];
           groups[g].push(it);
         });
@@ -117,10 +140,11 @@
           listEl.appendChild(gt);
 
           list.forEach(it => {
-            const canAfford = currentMoney >= it.price;
+            // 商店模式始终可点击购买; 投喂模式按金币是否充足
+            const canAfford = shopMode ? true : currentMoney >= it.price;
             const btn = document.createElement('button');
             btn.className = 'item-btn' + (canAfford ? '' : ' cannot-afford');
-            if (it.desc) btn.title = it.desc; // 悬停展示 VPet 原版描述文案
+            if (it.desc) btn.title = it.desc;
 
             const nameLine = document.createElement('div');
             nameLine.className = 'item-name';
@@ -137,26 +161,26 @@
             if (!canAfford) {
               eff.textContent = `金币不足（差 ${(it.price - currentMoney).toFixed(0)} 金币）`;
             } else {
-              const isMed = it.graph === 'medicine';
-              const parts = [];
-              if (isMed && it.health) {
-                parts.push(`🩺 健康+${it.health.toFixed(0)}`);
-              } else {
-                if (it.strengthFood) parts.push(`饱腹${it.strengthFood > 0 ? '+' : ''}${it.strengthFood}`);
-                if (it.strengthDrink) parts.push(`口渴${it.strengthDrink > 0 ? '+' : ''}${it.strengthDrink}`);
-                if (it.strength) parts.push(`体力${it.strength > 0 ? '+' : ''}${it.strength}`);
-                if (it.feeling) parts.push(`心情${it.feeling > 0 ? '+' : ''}${it.feeling}`);
-                if (it.health) parts.push(`健康${it.health > 0 ? '+' : ''}${it.health}`);
-                if (it.exp) parts.push(`经验${it.exp > 0 ? '+' : ''}${it.exp}`);
-                if (it.likability) parts.push(`好感${it.likability > 0 ? '+' : ''}${it.likability}`);
-              }
-              eff.textContent = parts.join('  ') || '无属性变化';
+              eff.textContent = effectsText(it);
             }
 
             btn.appendChild(nameLine);
             btn.appendChild(eff);
 
-            if (canAfford) {
+            if (shopMode) {
+              btn.addEventListener('click', async () => {
+                btn.disabled = true;
+                try {
+                  const r = await invoke('buy_item', { name: it.name, count: 1 });
+                  if (r && r.stats) updateWallet(r.stats.money);
+                  eff.textContent = r?.message || (r?.ok ? '已购买~' : '购买失败');
+                  eff.className = 'item-effects' + (r?.ok ? '' : ' cannot-afford');
+                  setTimeout(() => { eff.textContent = effectsText(it); eff.className = 'item-effects'; }, 1600);
+                } catch (_) {
+                  eff.textContent = '购买失败';
+                } finally { btn.disabled = false; }
+              });
+            } else if (canAfford) {
               btn.addEventListener('click', () => {
                 hideCurrentPanel();
                 window.PetRuntime.emit('food-selected', { name: it.name, graph: it.graph }).catch(() => {});

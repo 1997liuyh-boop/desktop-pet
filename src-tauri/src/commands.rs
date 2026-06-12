@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Manager;
 use crate::systems::stats::StatsData;
+use crate::systems::extras::{PetSettings, ScheduleItem};
 use crate::ai::persona::PersonaSystem;
 use crate::ai::llm_client::{LLMConfig, ChatMessage, chat_stream as llm_chat_stream};
 
@@ -1331,9 +1332,26 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
     let mut core = state.core.lock().map_err(|e| e.to_string())?;
     let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
     let mut work = state.work.lock().map_err(|e| e.to_string())?;
+    let mut extras = state.extras.lock().map_err(|e| e.to_string())?;
 
+    let data_calc = extras.data.settings.enable_data_calc;
     let level_before = stats.data.level();
     let mut completed_work: Option<serde_json::Value> = None;
+
+    // ── 累计统计: 在线时长按当前状态分桶 ──
+    extras.data.statistics.total_online_secs += dt_seconds;
+    if work.is_active {
+        match work.now_work.as_ref().map(|w| w.work_type) {
+            Some(WorkType::Work) => extras.data.statistics.work_secs += dt_seconds,
+            Some(WorkType::Study) => extras.data.statistics.study_secs += dt_seconds,
+            Some(WorkType::Play) => extras.data.statistics.play_secs += dt_seconds,
+            None => {}
+        }
+    } else if core.state == PetState::Sleep {
+        extras.data.statistics.sleep_secs += dt_seconds;
+    } else {
+        extras.data.statistics.idle_secs += dt_seconds;
+    }
 
     // Decrement the action lock.
     core.tick_action_lock(dt_seconds);
@@ -1354,11 +1372,22 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
             WorkingState::Nomal
         };
 
+        // 数据计算关闭时跳过需求消耗 (纯观赏模式), 仍保留工作计时
+        if !data_calc {
+            continue;
+        }
+
         let (get_count_add, stop_ill) = {
             let nw = work.now_work.as_ref();
             stats.data.function_spend(0.05, working_state, nw)
         };
         work.get_count += get_count_add;
+        // 工作收益计入"累计赚取" (仅 Work 类型产出金币)
+        if work.is_active
+            && work.now_work.as_ref().map(|w| w.work_type) == Some(WorkType::Work)
+        {
+            extras.data.statistics.money_earned += get_count_add;
+        }
 
         // 生病时停止工�?(对标 VPet: Ill && Work �?Stop)
         if stop_ill && work.is_active {
@@ -1377,11 +1406,14 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
                 let finish_bonus = work.get_count * current.finish_bonus;
                 if current.work_type == WorkType::Work {
                     stats.data.money += finish_bonus;
+                    extras.data.statistics.money_earned += finish_bonus;
                 } else {
                     stats.data.exp += finish_bonus;
                 }
                 let total_count = work.get_count * (1.0 + current.finish_bonus);
                 let unit = if current.work_type == WorkType::Work { "金币" } else { "经验" };
+                extras.data.statistics.work_done_count += 1;
+                extras.add_log("work", format!("{}完成，累计 {:.1} {}", current.name, total_count, unit));
                 completed_work = Some(serde_json::json!({
                     "name": current.name,
                     "graphType": current.graph,
@@ -1411,6 +1443,71 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
         }
     }
 
+    // ── 日程表自动执行 ──
+    // 没有正在进行的工作、未被拖拽/睡眠/动作锁定时, 自动开始下一条日程
+    if extras.data.schedule.enabled
+        && !extras.data.schedule.items.is_empty()
+        && !work.is_active
+        && !core.is_dragging
+        && core.state != PetState::Sleep
+        && core.action_lock_remaining <= 0.0
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // 正在休息则等待
+        if extras.data.schedule.rest_until > now {
+            // waiting
+        } else {
+            if extras.data.schedule.rest_until != 0 {
+                extras.data.schedule.rest_until = 0;
+            }
+            // 规整索引 / 处理循环
+            let len = extras.data.schedule.items.len();
+            if extras.data.schedule.current_index >= len {
+                if extras.data.schedule.loop_forever {
+                    extras.data.schedule.current_index = 0;
+                } else {
+                    extras.data.schedule.enabled = false;
+                    extras.add_log("schedule", "日程表执行完毕".into());
+                }
+            }
+
+            if extras.data.schedule.enabled {
+                let idx = extras.data.schedule.current_index;
+                let item = extras.data.schedule.items[idx].clone();
+                if item.graph == "rest" {
+                    let secs = (item.minutes.max(0.1) * 60.0) as u64;
+                    extras.data.schedule.rest_until = now + secs;
+                    extras.data.schedule.current_index += 1;
+                    extras.add_log("schedule", format!("日程: 休息 {:.0} 分钟", item.minutes));
+                } else if let Some(mut w) = crate::systems::work::find_work(&item.graph) {
+                    if stats.data.level() < w.level_limit {
+                        // 等级不足, 跳过该条目
+                        extras.data.schedule.current_index += 1;
+                        extras.add_log("schedule", format!("日程: 等级不足跳过 {}", item.name));
+                    } else {
+                        if item.minutes > 0.0 {
+                            w.time_minutes = item.minutes.round() as i32;
+                        }
+                        let graph_name = w.graph.clone();
+                        let w_name = w.name.clone();
+                        work.start(w);
+                        core.current_graph_type = graph_name;
+                        core.set_action_lock(5.0);
+                        core.set_state(PetState::Idle);
+                        extras.data.schedule.current_index += 1;
+                        extras.add_log("schedule", format!("日程: 开始 {}", w_name));
+                    }
+                } else {
+                    extras.data.schedule.current_index += 1;
+                }
+            }
+        }
+    }
+
     // 更新 graph type (工作期间维持该工种专属动�?
     core.mood = stats.data.get_mood();
     if work.is_active {
@@ -1425,9 +1522,16 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
     let graph_type = core.current_graph_type.clone();
     let working = work.is_active;
     let leveled_up = stats.data.level() > level_before;
+    if leveled_up {
+        let gained = (stats.data.level() - level_before).max(0) as u64;
+        extras.data.statistics.level_up_count += gained;
+        extras.add_log("level", format!("升级到 Lv.{}", stats.data.level()));
+    }
     let work_json = work_status_json(&work);
 
     // 自动存档
+    extras.save();
+    drop(extras);
     drop(core);
     stats.save();
 
@@ -1542,6 +1646,13 @@ pub fn walk_tick(
         }
     }
 
+    // 累计移动距离 (内存累加, 由 game_tick 周期落盘)
+    if dx != 0 {
+        if let Ok(mut extras) = state.extras.lock() {
+            extras.data.statistics.move_distance += dx.abs() as f64;
+        }
+    }
+
     Ok(serde_json::json!({
         "dx": dx,
         "dy": dy,
@@ -1625,11 +1736,53 @@ pub fn open_food_panel(app: tauri::AppHandle, filter: Option<String>) -> Result<
     // 设置筛选条件并刷新列表 (面板�?hide 而非 destroy, 需手动重新初始�?
     let filter_json = serde_json::to_string(&filter).unwrap_or("null".into());
     let _ = win.eval(&format!(
-        "window.__foodFilter = {}; var el=document.getElementById('food-list'); if(el)el.innerHTML=''; var em=document.getElementById('empty-msg'); if(em)em.style.display='none'; if(typeof init==='function')init();",
+        "window.__shopMode = false; window.__foodFilter = {}; var el=document.getElementById('food-list'); if(el)el.innerHTML=''; var em=document.getElementById('empty-msg'); if(em)em.style.display='none'; if(typeof init==='function')init();",
         filter_json
     ));
+    let _ = win.set_title("投喂");
     let _ = win.show();
     let _ = win.set_focus();
+    Ok(())
+}
+
+/// 打开商店 (复用投喂面板窗口, 购买入背包)
+#[tauri::command]
+pub fn open_shop_panel(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+
+    let win = app.get_webview_window("food-panel").ok_or("Food panel window not found")?;
+    panel_position_near_pet(&app, &win, 280, 440);
+    let _ = win.eval(
+        "window.__shopMode = true; window.__foodFilter = null; var el=document.getElementById('food-list'); if(el)el.innerHTML=''; var em=document.getElementById('empty-msg'); if(em)em.style.display='none'; if(typeof init==='function')init();"
+    );
+    let _ = win.set_title("商店");
+    let _ = win.show();
+    let _ = win.set_focus();
+    Ok(())
+}
+
+/// 打开日程表面板 (独立窗口, 宠物旁定位)
+#[tauri::command]
+pub fn open_schedule_panel(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let win = app.get_webview_window("schedule-panel").ok_or("Schedule panel window not found")?;
+    panel_position_near_pet(&app, &win, 320, 480);
+    let _ = win.eval("if(typeof load==='function')load();");
+    let _ = win.show();
+    let _ = win.set_focus();
+    Ok(())
+}
+
+/// 调整宠物窗口缩放 (基准 250x378)
+#[tauri::command]
+pub fn set_pet_window_scale(app: tauri::AppHandle, scale: f64) -> Result<(), String> {
+    use tauri::Manager;
+    let s = scale.clamp(0.6, 1.8);
+    if let Some(pet) = app.get_webview_window("pet") {
+        let w = 250.0 * s;
+        let h = 378.0 * s;
+        let _ = pet.set_size(tauri::Size::Logical(tauri::LogicalSize::new(w, h)));
+    }
     Ok(())
 }
 
@@ -1983,6 +2136,297 @@ pub fn sidehide_check(
             }
         }
     }
+}
+
+// ── 统计 / 活动日志 ──
+
+/// 读取累计统计
+#[tauri::command]
+pub fn get_statistics(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let extras = state.extras.lock().map_err(|e| e.to_string())?;
+    serde_json::to_value(&extras.data.statistics).map_err(|e| e.to_string())
+}
+
+/// 前端上报一次性计数 (摸头/摸身/捏脸/拖拽/跳舞/说话/喂食/喝水/送礼)
+#[tauri::command]
+pub fn stat_increment(
+    kind: String,
+    amount: Option<f64>,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let mut extras = state.extras.lock().map_err(|e| e.to_string())?;
+    let n = amount.unwrap_or(1.0).max(0.0);
+    let s = &mut extras.data.statistics;
+    match kind.as_str() {
+        "touch_head" => s.touch_head_count += n as u64,
+        "touch_body" => s.touch_body_count += n as u64,
+        "pinch" => s.pinch_count += n as u64,
+        "drag" => s.drag_count += n as u64,
+        "dance" => s.dance_count += n as u64,
+        "talk" => s.talk_count += n as u64,
+        "feed" => s.feed_count += n as u64,
+        "drink" => s.drink_count += n as u64,
+        "gift" => s.gift_count += n as u64,
+        _ => return Err(format!("unknown stat kind: {}", kind)),
+    }
+    extras.save();
+    Ok(())
+}
+
+/// 读取活动日志 (最近 limit 条, 倒序)
+#[tauri::command]
+pub fn get_activity_log(
+    limit: Option<usize>,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let extras = state.extras.lock().map_err(|e| e.to_string())?;
+    let lim = limit.unwrap_or(60).min(200);
+    let log: Vec<_> = extras.data.log.iter().rev().take(lim).cloned().collect();
+    serde_json::to_value(&log).map_err(|e| e.to_string())
+}
+
+/// 前端追加一条活动日志
+#[tauri::command]
+pub fn log_event(
+    kind: String,
+    text: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let mut extras = state.extras.lock().map_err(|e| e.to_string())?;
+    extras.add_log(&kind, text);
+    extras.save();
+    Ok(())
+}
+
+// ── 商店 / 背包 / 礼品 ──
+
+fn food_meta_json(f: &crate::systems::food::Food) -> serde_json::Value {
+    serde_json::json!({
+        "name": f.name,
+        "type": f.food_type,
+        "graph": f.graph,
+        "exp": f.exp,
+        "strength": f.strength,
+        "strengthDrink": f.strength_drink,
+        "strengthFood": f.strength_food,
+        "health": f.health,
+        "feeling": f.feeling,
+        "likability": f.likability,
+        "price": f.price,
+        "desc": f.desc,
+        "image": f.image_rel_path(),
+    })
+}
+
+/// 商店全部商品 (含礼品)
+#[tauri::command]
+pub fn get_shop_items() -> Result<serde_json::Value, String> {
+    let items: Vec<serde_json::Value> = crate::systems::food::all_foods()
+        .iter()
+        .map(food_meta_json)
+        .collect();
+    Ok(serde_json::json!({ "items": items }))
+}
+
+/// 背包列表 (含物品属性)
+#[tauri::command]
+pub fn get_inventory(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let extras = state.extras.lock().map_err(|e| e.to_string())?;
+    let items: Vec<serde_json::Value> = extras
+        .data
+        .inventory
+        .iter()
+        .filter_map(|(name, count)| {
+            crate::systems::food::find_food(name).map(|f| {
+                let mut v = food_meta_json(&f);
+                v["count"] = serde_json::json!(count);
+                v
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "items": items }))
+}
+
+/// 购买物品进背包 (扣金币)
+#[tauri::command]
+pub fn buy_item(
+    name: String,
+    count: Option<u32>,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let qty = count.unwrap_or(1).max(1);
+    let food = crate::systems::food::find_food(&name)
+        .ok_or_else(|| format!("item not found: {}", name))?;
+    let total = food.price * qty as f64;
+
+    let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+    if stats.data.money < total {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "message": format!("金币不足！还差 {:.0} 金币", total - stats.data.money),
+            "stats": stats_json(&stats.data),
+        }));
+    }
+    stats.data.money -= total;
+    stats.save();
+
+    let mut extras = state.extras.lock().map_err(|e| e.to_string())?;
+    extras.inventory_add(&name, qty);
+    extras.data.statistics.money_spent += total;
+    extras.add_log("shop", format!("购买了 {} ×{} (花费 {:.0} 金币)", name, qty, total));
+    extras.save();
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "message": format!("买到了 {} ×{}~", name, qty),
+        "stats": stats_json(&stats.data),
+    }))
+}
+
+/// 使用背包物品 (吃/喝/送礼) — 套用真实属性, 返回动画与提示
+#[tauri::command]
+pub fn use_inventory_item(
+    name: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let food = crate::systems::food::find_food(&name)
+        .ok_or_else(|| format!("item not found: {}", name))?;
+
+    {
+        let mut extras = state.extras.lock().map_err(|e| e.to_string())?;
+        if !extras.inventory_take(&name) {
+            return Ok(serde_json::json!({ "ok": false, "message": "背包里没有这个物品了" }));
+        }
+        // 计入对应统计
+        match food.graph.as_str() {
+            "gift" => extras.data.statistics.gift_count += 1,
+            "drink" => extras.data.statistics.drink_count += 1,
+            _ => extras.data.statistics.feed_count += 1,
+        }
+        extras.add_log("inventory", format!("使用了背包里的 {}", name));
+        extras.save();
+    }
+
+    let mut core = state.core.lock().map_err(|e| e.to_string())?;
+    let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+    let mut work = state.work.lock().map_err(|e| e.to_string())?;
+    if work.is_active {
+        work.stop();
+    }
+
+    stats.data.eat_food(
+        food.exp, food.strength, food.strength_food,
+        food.strength_drink, food.feeling, food.health, food.likability,
+    );
+    stats.data.mark_interaction();
+    stats.save();
+
+    let anim_graph = match food.graph.as_str() {
+        "medicine" => "eat",
+        other => other,
+    };
+    core.set_state(PetState::Idle);
+    core.current_graph_type = anim_graph.into();
+    core.set_action_lock(3.0);
+
+    let bubble = match food.graph.as_str() {
+        "gift" => format!("谢谢主人的{}，我好喜欢喵~", food.name),
+        "drink" => format!("好喝的{}~", food.name),
+        "medicine" => format!("吃了{}，快点好起来喵~", food.name),
+        _ => format!("好吃的{}~", food.name),
+    };
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "graphType": anim_graph,
+        "isGift": food.graph == "gift",
+        "mood": stats.get_mood(),
+        "foodName": food.name,
+        "foodImage": food.image_rel_path(),
+        "showBubble": bubble,
+        "stats": stats_json(&stats.data),
+    }))
+}
+
+// ── 日程表 ──
+
+/// 读取日程表
+#[tauri::command]
+pub fn get_schedule(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let extras = state.extras.lock().map_err(|e| e.to_string())?;
+    serde_json::to_value(&extras.data.schedule).map_err(|e| e.to_string())
+}
+
+/// 保存日程表条目
+#[tauri::command]
+pub fn set_schedule(
+    items: Vec<ScheduleItem>,
+    loop_forever: bool,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let mut extras = state.extras.lock().map_err(|e| e.to_string())?;
+    extras.data.schedule.items = items;
+    extras.data.schedule.loop_forever = loop_forever;
+    extras.data.schedule.current_index = 0;
+    extras.data.schedule.rest_until = 0;
+    extras.save();
+    Ok(())
+}
+
+/// 启用/停用日程表
+#[tauri::command]
+pub fn set_schedule_enabled(
+    enabled: bool,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let mut extras = state.extras.lock().map_err(|e| e.to_string())?;
+    extras.data.schedule.enabled = enabled;
+    extras.data.schedule.current_index = 0;
+    extras.data.schedule.rest_until = 0;
+    if enabled {
+        extras.add_log("schedule", "开始执行日程表".into());
+    } else {
+        extras.add_log("schedule", "停止日程表".into());
+    }
+    extras.save();
+    // 停用时若正在按日程工作, 由前端调用 stop_work
+    Ok(serde_json::json!({ "enabled": enabled }))
+}
+
+// ── 设置 ──
+
+/// 读取设置
+#[tauri::command]
+pub fn get_settings(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let extras = state.extras.lock().map_err(|e| e.to_string())?;
+    serde_json::to_value(&extras.data.settings).map_err(|e| e.to_string())
+}
+
+/// 保存设置并应用窗口相关项 (置顶)
+#[tauri::command]
+pub fn save_settings(
+    app: tauri::AppHandle,
+    settings: PetSettings,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let mut clean = settings;
+    clean.scale = clean.scale.clamp(0.6, 1.8);
+    clean.opacity = clean.opacity.clamp(0.3, 1.0);
+    clean.volume = clean.volume.clamp(0.0, 1.0);
+
+    {
+        let mut extras = state.extras.lock().map_err(|e| e.to_string())?;
+        extras.data.settings = clean.clone();
+        extras.save();
+    }
+
+    // 应用窗口置顶
+    if let Some(pet) = app.get_webview_window("pet") {
+        let _ = pet.set_always_on_top(clean.always_on_top);
+        // 通知宠物窗口实时应用其余设置 (不透明度/音量/移动/缩放)
+        let _ = pet.emit("settings-changed", ());
+    }
+    Ok(())
 }
 
 // ── Coding Tools 监控 ──

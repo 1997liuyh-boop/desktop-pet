@@ -147,6 +147,35 @@
     <input type="text" id="ttsStyle" placeholder="语速偏轻快，情绪自然灵动，尾音柔和上扬，表达可爱但不过度夸张" />
   </div>
 
+  <!-- ── 桌宠 / 行为设置 ── -->
+  <hr class="section-divider" />
+  <h2>桌宠设置</h2>
+
+  <div class="section">
+    <label>窗口缩放 <span id="scaleVal" style="color:#8be9fd">100%</span></label>
+    <input type="range" id="scale" min="0.6" max="1.8" step="0.05" value="1" />
+  </div>
+  <div class="section">
+    <label>不透明度 <span id="opacityVal" style="color:#8be9fd">100%</span></label>
+    <input type="range" id="opacity" min="0.3" max="1" step="0.05" value="1" />
+  </div>
+  <div class="section">
+    <label>语音音量 <span id="volumeVal" style="color:#8be9fd">100%</span></label>
+    <input type="range" id="volume" min="0" max="1" step="0.05" value="1" />
+  </div>
+  <div class="section" style="display:flex;align-items:center;gap:8px">
+    <input type="checkbox" id="alwaysOnTop" style="width:auto" />
+    <label for="alwaysOnTop" style="margin:0">窗口置顶</label>
+  </div>
+  <div class="section" style="display:flex;align-items:center;gap:8px">
+    <input type="checkbox" id="enableMovement" style="width:auto" />
+    <label for="enableMovement" style="margin:0">允许自主走动</label>
+  </div>
+  <div class="section" style="display:flex;align-items:center;gap:8px">
+    <input type="checkbox" id="enableDataCalc" style="width:auto" />
+    <label for="enableDataCalc" style="margin:0">启用数据计算（需求消耗）</label>
+  </div>
+
   <div class="btn-row">
     <button class="btn-save" id="btn-save">保存</button>
     <button class="btn-close" id="btn-close">关闭</button>

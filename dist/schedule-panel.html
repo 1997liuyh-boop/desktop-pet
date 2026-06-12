@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>日程表</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a1a;
+      color: #e0e0e0;
+      font-family: "Microsoft YaHei", -apple-system, sans-serif;
+      font-size: 13px;
+      padding: 14px 16px 18px;
+      overflow-y: auto;
+      height: 100vh;
+    }
+    .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    h2 { font-size: 15px; color: #fff; }
+    .status-badge { font-size: 11px; padding: 3px 9px; border-radius: 10px; }
+    .status-badge.on { color: #4ade80; background: rgba(74,222,128,0.12); border: 1px solid rgba(74,222,128,0.3); }
+    .status-badge.off { color: #888; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); }
+
+    .hint { font-size: 11px; color: #888; margin-bottom: 10px; line-height: 1.5; }
+
+    .items { margin-bottom: 12px; }
+    .item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px; margin: 4px 0; border-radius: 8px;
+      background: rgba(255,255,255,0.05);
+    }
+    .item .order { color: #666; font-size: 11px; width: 16px; flex-shrink: 0; }
+    .item .info { flex: 1; min-width: 0; }
+    .item .nm { font-size: 13px; color: #fff; }
+    .item .meta { font-size: 10px; color: #9aa0aa; margin-top: 2px; }
+    .item .mins { color: #8be9fd; }
+    .icon-btn {
+      border: 0; background: rgba(255,255,255,0.08); color: #ccc;
+      width: 24px; height: 24px; border-radius: 5px; cursor: pointer; font-size: 12px; flex-shrink: 0;
+    }
+    .icon-btn:hover { background: rgba(255,255,255,0.16); }
+    .icon-btn.del { color: #f87171; }
+    .empty { color: #666; text-align: center; padding: 18px 0; font-size: 12px; }
+
+    .add-form {
+      display: flex; gap: 6px; align-items: center; margin-top: 8px;
+      padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08);
+    }
+    select, input[type="number"] {
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px; color: #e0e0e0; font-size: 12px; padding: 6px 8px; outline: none;
+      font-family: inherit;
+    }
+    select { flex: 1; min-width: 0; }
+    input[type="number"] { width: 64px; }
+    .label-sm { font-size: 11px; color: #999; }
+
+    .options-row { display: flex; align-items: center; gap: 8px; margin: 12px 0; font-size: 12px; color: #bbb; }
+
+    .btn-row { display: flex; gap: 8px; margin-top: 14px; }
+    .btn-row button { flex: 1; padding: 9px 0; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; font-family: inherit; transition: background 0.2s; }
+    .btn-save { background: rgba(100,150,255,0.3); color: #d0d8ff; }
+    .btn-save:hover { background: rgba(100,150,255,0.5); }
+    .btn-toggle { background: rgba(74,222,128,0.25); color: #c8f5d6; }
+    .btn-toggle:hover { background: rgba(74,222,128,0.4); }
+    .btn-toggle.on { background: rgba(248,113,113,0.25); color: #ffd0d0; }
+    .btn-toggle.on:hover { background: rgba(248,113,113,0.4); }
+    .status-msg { margin-top: 10px; font-size: 12px; color: #4ade80; min-height: 16px; }
+    .add-btn { background: rgba(255,255,255,0.1); color: #ddd; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; flex-shrink: 0; }
+    .add-btn:hover { background: rgba(255,255,255,0.18); }
+  </style>
+</head>
+<body>
+  <div class="header-row">
+    <h2>📅 日程表</h2>
+    <span class="status-badge off" id="status-badge">未启用</span>
+  </div>
+  <div class="hint">编排工作 / 学习 / 玩耍 / 休息序列，启用后桌宠会自动按顺序执行。可设置循环。</div>
+
+  <div class="items" id="items"></div>
+
+  <div class="add-form">
+    <select id="add-select"></select>
+    <input type="number" id="add-mins" min="1" max="600" value="30" title="分钟" />
+    <span class="label-sm">分</span>
+    <button class="add-btn" id="add-btn">添加</button>
+  </div>
+
+  <div class="options-row">
+    <input type="checkbox" id="loop-check" checked />
+    <label for="loop-check">循环执行</label>
+  </div>
+
+  <div class="btn-row">
+    <button class="btn-save" id="btn-save">保存</button>
+    <button class="btn-toggle" id="btn-toggle">启用</button>
+  </div>
+  <div class="status-msg" id="status-msg"></div>
+
+  <script src="scripts/runtime.js"></script>
+  <script>
+    const { invoke } = window.PetRuntime;
+    let items = [];
+    let enabled = false;
+    let workTypes = [];
+
+    const KIND_LABELS = { Work: '工作', Study: '学习', Play: '玩耍', Rest: '休息' };
+
+    function showStatus(msg) {
+      const el = document.getElementById('status-msg');
+      el.textContent = msg;
+      if (msg) setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 2200);
+    }
+
+    function renderBadge() {
+      const b = document.getElementById('status-badge');
+      b.textContent = enabled ? '执行中' : '未启用';
+      b.className = 'status-badge ' + (enabled ? 'on' : 'off');
+      const t = document.getElementById('btn-toggle');
+      t.textContent = enabled ? '停用' : '启用';
+      t.className = 'btn-toggle' + (enabled ? ' on' : '');
+    }
+
+    function renderItems() {
+      const el = document.getElementById('items');
+      if (!items.length) { el.innerHTML = '<div class="empty">还没有日程，下面添加一条吧~</div>'; return; }
+      el.innerHTML = '';
+      items.forEach((it, i) => {
+        const row = document.createElement('div');
+        row.className = 'item';
+        const kindLabel = KIND_LABELS[it.kind] || it.kind || '';
+        row.innerHTML = `
+          <span class="order">${i + 1}</span>
+          <div class="info">
+            <div class="nm">${it.name}</div>
+            <div class="meta">${kindLabel} · <span class="mins">${it.minutes} 分钟</span></div>
+          </div>`;
+        const up = document.createElement('button'); up.className = 'icon-btn'; up.textContent = '↑';
+        up.disabled = i === 0;
+        up.addEventListener('click', () => { if (i > 0) { [items[i-1], items[i]] = [items[i], items[i-1]]; renderItems(); } });
+        const down = document.createElement('button'); down.className = 'icon-btn'; down.textContent = '↓';
+        down.disabled = i === items.length - 1;
+        down.addEventListener('click', () => { if (i < items.length - 1) { [items[i+1], items[i]] = [items[i], items[i+1]]; renderItems(); } });
+        const del = document.createElement('button'); del.className = 'icon-btn del'; del.textContent = '×';
+        del.addEventListener('click', () => { items.splice(i, 1); renderItems(); });
+        row.appendChild(up); row.appendChild(down); row.appendChild(del);
+        el.appendChild(row);
+      });
+    }
+
+    function fillSelect() {
+      const sel = document.getElementById('add-select');
+      sel.innerHTML = '';
+      workTypes.forEach(w => {
+        const opt = document.createElement('option');
+        opt.value = JSON.stringify({ graph: w.graph, kind: w.type, name: w.name, mins: w.timeMinutes });
+        const lvl = w.levelLimit > 0 ? `（Lv.${w.levelLimit}）` : '';
+        opt.textContent = `${KIND_LABELS[w.type] || w.type}：${w.name}${lvl}`;
+        sel.appendChild(opt);
+      });
+      const restOpt = document.createElement('option');
+      restOpt.value = JSON.stringify({ graph: 'rest', kind: 'Rest', name: '休息', mins: 10 });
+      restOpt.textContent = '休息：放松一下';
+      sel.appendChild(restOpt);
+
+      sel.addEventListener('change', () => {
+        try { document.getElementById('add-mins').value = JSON.parse(sel.value).mins || 30; } catch (_) {}
+      });
+    }
+
+    async function load() {
+      try {
+        if (!workTypes.length) {
+          workTypes = await invoke('get_work_types', {});
+          fillSelect();
+        }
+        const sched = await invoke('get_schedule', {});
+        items = (sched.items || []).map(it => ({ graph: it.graph, kind: it.kind, name: it.name, minutes: it.minutes }));
+        enabled = !!sched.enabled;
+        document.getElementById('loop-check').checked = sched.loop_forever !== false;
+        renderItems();
+        renderBadge();
+      } catch (e) { showStatus('加载失败'); }
+    }
+
+    document.getElementById('add-btn').addEventListener('click', () => {
+      let v;
+      try { v = JSON.parse(document.getElementById('add-select').value); } catch (_) { return; }
+      const mins = Math.max(1, Math.min(600, Number(document.getElementById('add-mins').value) || 30));
+      items.push({ graph: v.graph, kind: v.kind, name: v.name, minutes: mins });
+      renderItems();
+    });
+
+    async function save() {
+      try {
+        await invoke('set_schedule', { items, loopForever: document.getElementById('loop-check').checked });
+        showStatus('已保存');
+      } catch (e) { showStatus('保存失败'); }
+    }
+
+    document.getElementById('btn-save').addEventListener('click', save);
+
+    document.getElementById('btn-toggle').addEventListener('click', async () => {
+      try {
+        // 先保存当前编排, 再切换启停
+        await invoke('set_schedule', { items, loopForever: document.getElementById('loop-check').checked });
+        const r = await invoke('set_schedule_enabled', { enabled: !enabled });
+        enabled = !!r.enabled;
+        renderBadge();
+        showStatus(enabled ? '日程已启用' : '日程已停用');
+      } catch (e) { showStatus('操作失败'); }
+    });
+
+    load();
+  </script>
+</body>
+</html>
