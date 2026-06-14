@@ -135,6 +135,30 @@
     .log-kind { font-size: 10px; color: #ffcf8a; margin-right: 6px; }
     .log-text { color: #ddd; }
 
+    /* 邮件 */
+    .mail-badge {
+      display: inline-block; min-width: 15px; height: 15px; line-height: 15px;
+      padding: 0 4px; margin-left: 4px; border-radius: 8px;
+      background: #f87171; color: #fff; font-size: 9px; vertical-align: top;
+    }
+    .mail-item {
+      padding: 9px 11px; margin: 6px 0; border-radius: 8px;
+      background: rgba(255,255,255,0.05); border-left: 3px solid #818cf8;
+    }
+    .mail-item.opened { opacity: 0.55; border-left-color: #555; }
+    .mail-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .mail-title { font-size: 13px; color: #fff; font-weight: 600; }
+    .mail-time { font-size: 10px; color: #777; flex-shrink: 0; }
+    .mail-body { font-size: 11px; color: #bbb; margin: 5px 0 6px; line-height: 1.45; }
+    .mail-reward { font-size: 11px; color: #ffd700; }
+    .mail-open {
+      border: 0; background: rgba(129,140,248,0.35); color: #e3e6ff;
+      border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer;
+      font-family: inherit; margin-top: 6px;
+    }
+    .mail-open:hover { background: rgba(129,140,248,0.55); }
+    .mail-open:disabled { background: rgba(255,255,255,0.08); color: #777; cursor: default; }
+
     .loading { text-align: center; padding: 40px 0; color: #555; font-size: 12px; }
     .error-msg { text-align: center; padding: 40px 0; color: #f87171; font-size: 12px; }
     .empty { text-align: center; padding: 40px 0; color: #666; font-size: 12px; }
@@ -145,12 +169,14 @@
     <div class="tab active" data-tab="status">状态</div>
     <div class="tab" data-tab="stats">统计</div>
     <div class="tab" data-tab="inventory">背包</div>
+    <div class="tab" data-tab="mail">邮件<span id="mail-badge" class="mail-badge" hidden></span></div>
     <div class="tab" data-tab="log">日志</div>
   </div>
 
   <div class="view" id="view-status"><div class="loading">加载中…</div></div>
   <div class="view" id="view-stats" hidden><div class="loading">加载中…</div></div>
   <div class="view" id="view-inventory" hidden><div class="loading">加载中…</div></div>
+  <div class="view" id="view-mail" hidden><div class="loading">加载中…</div></div>
   <div class="view" id="view-log" hidden><div class="loading">加载中…</div></div>
 
   <script src="scripts/runtime.js"></script>
@@ -230,7 +256,9 @@
             ${statRow('口渴', s.thirst)}
             ${statRow('健康', s.health)}
           </div>
-          <div class="info-row"><span>好感度</span><span class="info-val pink">${Math.round(s.likability ?? 0)} ❤</span></div>
+          <div class="section-label"><span>好感度 · ${s.likabilityTitle || ''}</span><span class="info-val pink">${Math.round(s.likability ?? 0)} / ${Math.round(s.likabilityMax ?? 100)} ❤</span></div>
+          <div class="bar-wrap"><div class="bar-fill" style="width:${Math.min(100, Math.round((s.likability ?? 0) / (s.likabilityMax || 100) * 100))}%;background:#f9a8d4"></div></div>
+          ${s.like520Unlocked ? '<div class="info-row"><span>专属解锁</span><span class="info-val" style="color:#f9a8d4">💞 挚爱待机 已解锁</span></div>' : '<div class="info-row"><span>专属解锁</span><span class="info-val" style="color:#777">好感度满 520 解锁挚爱待机</span></div>'}
         `;
       } catch (e) {
         document.getElementById('view-status').innerHTML = '<div class="error-msg">加载失败</div>';
@@ -239,8 +267,19 @@
 
     async function loadStats() {
       try {
-        const s = await invoke('get_statistics', {});
+        const [s, status] = await Promise.all([
+          invoke('get_statistics', {}),
+          invoke('get_pet_status', {}).catch(() => null),
+        ]);
+        const curMoney = Number(status?.stats?.money ?? 0);
+        const earned = Number(s.money_earned || 0);
+        const spent = Number(s.money_spent || 0);
         document.getElementById('view-stats').innerHTML = `
+          <div class="stat-group-title">钱包</div>
+          ${kv('当前余额', curMoney.toFixed(0) + ' 金币')}
+          ${kv('累计赚取', earned.toFixed(0) + ' 金币')}
+          ${kv('累计消费', spent.toFixed(0) + ' 金币')}
+          ${kv('净收益', (earned - spent).toFixed(0) + ' 金币')}
           <div class="stat-group-title">时长</div>
           ${kv('总在线', fmtDuration(s.total_online_secs))}
           ${kv('工作', fmtDuration(s.work_secs))}
@@ -258,11 +297,9 @@
           ${kv('喂食', s.feed_count)}
           ${kv('喝水', s.drink_count)}
           ${kv('送礼', s.gift_count)}
-          <div class="stat-group-title">成长 / 经济</div>
+          <div class="stat-group-title">成长</div>
           ${kv('完成工作', s.work_done_count + ' 次')}
           ${kv('升级', s.level_up_count + ' 次')}
-          ${kv('累计赚取', (s.money_earned || 0).toFixed(0) + ' 金币')}
-          ${kv('累计消费', (s.money_spent || 0).toFixed(0) + ' 金币')}
           ${kv('移动距离', Math.round(s.move_distance || 0) + ' px')}
         `;
       } catch (e) {
@@ -307,6 +344,62 @@
       }
     }
 
+    async function refreshMailBadge() {
+      try {
+        const data = await invoke('get_mailbox', {});
+        const badge = document.getElementById('mail-badge');
+        const n = Number(data?.unread || 0);
+        if (badge) {
+          badge.hidden = n <= 0;
+          badge.textContent = n > 99 ? '99+' : String(n);
+        }
+        return data;
+      } catch (_) { return null; }
+    }
+
+    async function loadMail() {
+      const el = document.getElementById('view-mail');
+      try {
+        const data = await refreshMailBadge();
+        const items = (data && data.items) ? data.items : [];
+        if (!items.length) { el.innerHTML = '<div class="empty">邮箱空空如也，每天登录会收到礼包哦~</div>'; return; }
+        el.innerHTML = '';
+        items.forEach(m => {
+          const d = new Date((m.ts || 0) * 1000);
+          const hh = String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getDate()).padStart(2, '0');
+          const rewardParts = [];
+          if (m.rewardMoney > 0) rewardParts.push(`💰 ${Math.round(m.rewardMoney)} 金币`);
+          (m.rewardItems || []).forEach(it => rewardParts.push(`🎁 ${it.name}×${it.count}`));
+          const row = document.createElement('div');
+          row.className = 'mail-item' + (m.opened ? ' opened' : '');
+          row.innerHTML = `
+            <div class="mail-top">
+              <span class="mail-title">${m.title}</span>
+              <span class="mail-time">${hh}</span>
+            </div>
+            <div class="mail-body">${m.body}</div>
+            <div class="mail-reward">${rewardParts.join('  ')}</div>`;
+          const btn = document.createElement('button');
+          btn.className = 'mail-open';
+          btn.textContent = m.opened ? '已领取' : '领取奖励';
+          btn.disabled = !!m.opened;
+          btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            try {
+              const r = await invoke('open_mail', { id: m.id });
+              if (r && r.ok) { btn.textContent = '已领取'; }
+              else { btn.disabled = false; }
+            } catch (_) { btn.disabled = false; }
+            setTimeout(loadMail, 300);
+          });
+          row.appendChild(btn);
+          el.appendChild(row);
+        });
+      } catch (e) {
+        el.innerHTML = '<div class="error-msg">加载失败</div>';
+      }
+    }
+
     async function loadLog() {
       const el = document.getElementById('view-log');
       try {
@@ -328,7 +421,7 @@
       }
     }
 
-    const LOADERS = { status: loadStatus, stats: loadStats, inventory: loadInventory, log: loadLog };
+    const LOADERS = { status: loadStatus, stats: loadStats, inventory: loadInventory, mail: loadMail, log: loadLog };
     let currentTab = 'status';
 
     function switchTab(name) {
@@ -343,7 +436,7 @@
     });
 
     // 由 Rust open_status_panel 调用
-    function load() { switchTab(currentTab); }
+    function load() { switchTab(currentTab); refreshMailBadge(); }
 
     load();
   </script>

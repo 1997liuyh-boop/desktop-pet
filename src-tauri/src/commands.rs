@@ -893,7 +893,11 @@ fn stats_json(d: &StatsData) -> serde_json::Value {
         "energy": d.strength,
         "health": d.health,
         "likability": d.likability,
+        "likabilityMax": d.likability_max(),
+        "likabilityTitle": d.likability_title(),
+        "like520Unlocked": d.like520_unlocked(),
         "level": d.level(),
+        "levelUpNeed": d.level_up_need(),
         "exp": d.exp,
         "money": d.money,
     })
@@ -1568,6 +1572,11 @@ pub fn game_tick(dt_seconds: f64, state: tauri::State<'_, Arc<AppState>>) -> Res
     }
     let work_json = work_status_json(&work);
 
+    // 每日礼包: 跨天自动投递
+    if extras.ensure_daily_mail() {
+        extras.add_log("mail", "收到一封每日礼包邮件".to_string());
+    }
+
     // 自动存档
     extras.save();
     drop(extras);
@@ -1721,6 +1730,19 @@ pub fn reset_walk_state(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_
         "graphType": "default",
         "walking": false,
     }))
+}
+
+/// 立即让宠物出门散步 (道具/工具触发)
+#[tauri::command]
+pub fn force_walk(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let mut core = state.core.lock().map_err(|e| e.to_string())?;
+    let mut walk = state.walk.lock().map_err(|e| e.to_string())?;
+
+    walk.force_walk();
+    core.set_action_lock(0.0);
+    core.set_state(PetState::Idle);
+
+    Ok(serde_json::json!({ "walking": true }))
 }
 
 /// 打开设置窗口 (预配置窗�? 居中, 可拖�?
@@ -2337,6 +2359,26 @@ pub fn use_inventory_item(
     let food = crate::systems::food::find_food(&name)
         .ok_or_else(|| format!("item not found: {}", name))?;
 
+    // 道具/工具: 不消耗状态, 仅触发前端行为
+    if food.food_type == crate::systems::food::FoodType::Tool {
+        let mut extras = state.extras.lock().map_err(|e| e.to_string())?;
+        if !extras.inventory_take(&name) {
+            return Ok(serde_json::json!({ "ok": false, "message": "背包里没有这个物品了" }));
+        }
+        extras.add_log("inventory", format!("使用了道具 {}", name));
+        extras.save();
+        let (action, bubble) = match food.name.as_str() {
+            "指南针" => ("walk", "出门溜达一圈喵~"),
+            _ => ("none", "好像没什么反应..."),
+        };
+        return Ok(serde_json::json!({
+            "ok": true,
+            "isTool": true,
+            "action": action,
+            "showBubble": bubble,
+        }));
+    }
+
     {
         let mut extras = state.extras.lock().map_err(|e| e.to_string())?;
         if !extras.inventory_take(&name) {
@@ -2390,6 +2432,104 @@ pub fn use_inventory_item(
         "foodImage": food.image_rel_path(),
         "showBubble": bubble,
         "stats": stats_json(&stats.data),
+    }))
+}
+
+// ── 邮箱 ──
+
+/// 获取邮箱列表 (最新在前)
+#[tauri::command]
+pub fn get_mailbox(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let extras = state.extras.lock().map_err(|e| e.to_string())?;
+    let mut mails: Vec<serde_json::Value> = extras
+        .data
+        .mailbox
+        .iter()
+        .rev()
+        .map(|m| {
+            let items: Vec<serde_json::Value> = m
+                .reward
+                .items
+                .iter()
+                .map(|(n, c)| serde_json::json!({ "name": n, "count": c }))
+                .collect();
+            serde_json::json!({
+                "id": m.id,
+                "ts": m.ts,
+                "title": m.title,
+                "body": m.body,
+                "opened": m.opened,
+                "rewardMoney": m.reward.money,
+                "rewardItems": items,
+            })
+        })
+        .collect();
+    // rev() 已使最新在前; 限制返回数量
+    mails.truncate(50);
+    Ok(serde_json::json!({
+        "items": mails,
+        "unread": extras.unread_mail_count(),
+    }))
+}
+
+/// 打开一封邮件 — 领取奖励 (金币 + 物品入背包)
+#[tauri::command]
+pub fn open_mail(
+    id: u64,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let mut extras = state.extras.lock().map_err(|e| e.to_string())?;
+
+    let (reward, title, already) = {
+        let mail = extras
+            .data
+            .mailbox
+            .iter()
+            .find(|m| m.id == id)
+            .ok_or_else(|| format!("mail not found: {}", id))?;
+        (mail.reward.clone(), mail.title.clone(), mail.opened)
+    };
+
+    if already {
+        return Ok(serde_json::json!({ "ok": false, "message": "这封邮件已经领取过啦" }));
+    }
+
+    // 发放金币
+    if reward.money > 0.0 {
+        let mut stats = state.stats.lock().map_err(|e| e.to_string())?;
+        stats.data.money += reward.money;
+        extras.data.statistics.money_earned += reward.money;
+        stats.save();
+    }
+    // 发放物品
+    let mut names: Vec<String> = Vec::new();
+    for (name, count) in &reward.items {
+        extras.inventory_add(name, *count);
+        names.push(format!("{}×{}", name, count));
+    }
+
+    // 标记已读
+    if let Some(mail) = extras.data.mailbox.iter_mut().find(|m| m.id == id) {
+        mail.opened = true;
+    }
+    let summary = {
+        let mut parts: Vec<String> = Vec::new();
+        if reward.money > 0.0 {
+            parts.push(format!("{:.0} 金币", reward.money));
+        }
+        if !names.is_empty() {
+            parts.push(names.join(", "));
+        }
+        if parts.is_empty() { "一份心意".to_string() } else { parts.join(" + ") }
+    };
+    extras.add_log("mail", format!("打开《{}》，获得 {}", title, summary));
+    extras.save();
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "message": format!("打开《{}》，获得 {}~", title, summary),
+        "summary": summary,
+        "unread": extras.unread_mail_count(),
     }))
 }
 

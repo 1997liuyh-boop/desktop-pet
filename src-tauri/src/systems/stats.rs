@@ -51,6 +51,13 @@ pub struct StatsData {
     pub tick_accumulator: f64,
 
     pub last_update: u64,
+
+    /// 宠物创建时间 (unix 秒) — 用于生日检测
+    #[serde(default)]
+    pub created_at: u64,
+    /// 存档版本 — 用于一次性迁移旧存档
+    #[serde(default)]
+    pub save_version: u32,
 }
 
 impl Default for StatsData {
@@ -58,7 +65,7 @@ impl Default for StatsData {
     fn default() -> Self {
         let mut d = Self {
             name: "小橘".into(),
-            money: 300.0,
+            money: 200.0,
             exp: 0.0,
             strength: 100.0,
             store_strength: 0.0,
@@ -77,10 +84,43 @@ impl Default for StatsData {
             seconds_since_interaction: 0.0,
             tick_accumulator: 0.0,
             last_update: 0,
+            created_at: 0,
+            save_version: 1,
         };
         d.mode = mode_to_str(d.cal_mode());
         d
     }
+}
+
+/// 将 unix 秒转换为 (月, 日) — 用于生日检测 (本地化近似: UTC)
+pub fn unix_to_month_day(ts: u64) -> (u32, u32) {
+    // 简化历法: 从 1970-01-01 起按天累加 (UTC), 闰年规则完整
+    let days = (ts / 86_400) as i64;
+    let mut year = 1970i64;
+    let mut remaining = days;
+    let is_leap = |y: i64| (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    loop {
+        let year_days = if is_leap(year) { 366 } else { 365 };
+        if remaining < year_days {
+            break;
+        }
+        remaining -= year_days;
+        year += 1;
+    }
+    let month_days = [
+        31,
+        if is_leap(year) { 29 } else { 28 },
+        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+    let mut month = 1u32;
+    for &md in month_days.iter() {
+        if remaining < md {
+            break;
+        }
+        remaining -= md;
+        month += 1;
+    }
+    ((month).min(12), (remaining as u32) + 1)
 }
 
 /// ModeType 数值: 0=Happy 1=Nomal 2=PoorCondition 3=Ill (对标 VPet IGameSave.ModeType)
@@ -114,6 +154,31 @@ impl StatsData {
     /// 好感度上限: 90 + Level*10
     pub fn likability_max(&self) -> f64 {
         90.0 + self.level() as f64 * 10.0
+    }
+
+    /// 好感度称号 (对标 VPet 好感度等级体系)
+    pub fn likability_title(&self) -> &'static str {
+        let l = self.likability;
+        if l >= 520.0 {
+            "挚爱"
+        } else if l >= 160.0 {
+            "信赖"
+        } else if l >= 80.0 {
+            "亲密"
+        } else if l >= 40.0 {
+            "友好"
+        } else if l >= 20.0 {
+            "熟悉"
+        } else if l >= 5.0 {
+            "认识"
+        } else {
+            "陌生"
+        }
+    }
+
+    /// 是否已解锁 like520 特殊待机 (好感度 >= 520)
+    pub fn like520_unlocked(&self) -> bool {
+        self.likability >= 520.0
     }
 
     /// 心情上限 (对标 Core GameSave.FeelingMax => 100)
@@ -508,6 +573,14 @@ impl StatsData {
         self.feeling_change(5.0);
     }
 
+    /// 收到礼物 — 大幅提升心情与好感度 (对标 VPet Gift)
+    pub fn receive_gift(&mut self) {
+        self.exp += 5.0;
+        self.feeling_change(20.0);
+        self.set_health(self.health + 5.0);
+        self.set_likability(self.likability + 10.0);
+    }
+
     /// 捏脸 — 降低心情
     pub fn pinch(&mut self) {
         self.feeling_change(-5.0);
@@ -537,8 +610,31 @@ impl Stats {
             .join("data")
             .join("pet-stats.json");
 
-        let data = Self::load_from_file(&save_path).unwrap_or_default();
-        Self { data, save_path }
+        let mut data = Self::load_from_file(&save_path).unwrap_or_default();
+        let mut need_save = false;
+
+        // 初始化创建时间 (用于生日检测)
+        if data.created_at == 0 {
+            data.created_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            need_save = true;
+        }
+
+        // 一次性迁移: 旧调试存档 (如 Lv.30) 重置为 Lv.1 + 200 金币
+        if data.save_version < 1 {
+            data.exp = 0.0;
+            data.money = 200.0;
+            data.save_version = 1;
+            need_save = true;
+        }
+
+        let this = Self { data, save_path };
+        if need_save {
+            this.save();
+        }
+        this
     }
 
     fn load_from_file(path: &PathBuf) -> Option<StatsData> {

@@ -68,7 +68,12 @@ const EDGE_CLIMB_STEP_PX = 12;
 const EDGE_FALL_STEP_PX = 48;
 const EDGE_FALL_TICK_MS = 24;
 const EDGE_FALL_BOTTOM_SAFE_GAP_PX = 56;
-const EDGE_CLIMB_MAX_MS = 180000;
+// 爬墙单次最长时长 (超时强制结束, 防止卡在边缘); 对标 VPet 爬墙是短暂行为
+const EDGE_CLIMB_MAX_MS = 45000;
+// 对标 VPet: 撞到屏幕边缘后多数情况转身继续走, 仅小概率触发爬墙
+const EDGE_CLIMB_CHANCE = 0.2;
+// 一次撞墙(无论是否爬墙)后的爬墙冷却, 避免在边缘反复试探
+const EDGE_CLIMB_COOLDOWN_MS = 12000;
 // 拖拽松手时距地面超过该高度 → 触发重力下坠安全落地
 // 距地面高于屏幕工作区高度的此比例才触发重力下坠 — 太小会导致轻微拖动也演一整套坠落动画
 const GRAVITY_DROP_MIN_RATIO = 0.3;
@@ -754,6 +759,7 @@ class ToolBar {
       { label: '戳脸', action: () => { this.hide(); this.app._handlePinch(); } },
       { label: '🎁 送礼物', action: () => { this.hide(); this.app._handleGift(); } },
       { label: '唱歌', action: () => this._showSingPrompt() },
+      { label: '🎮 追逐游戏', action: () => { this.hide(); this.app._startChaseGame(); } },
       { label: '玩耍面板', action: () => this._showWorkPanel('play') },
       { label: '工作面板', action: () => this._showWorkPanel('work') },
     ];
@@ -1065,6 +1071,14 @@ class DesktopPetApp {
     this._walkPendingStartedAt = 0;
     this._walkRunGraphType = null;
     this._walkEndPending = false;
+    this._edgeClimbCooldownUntil = 0;
+    this._like520Unlocked = false;
+    this._petStatus = null;
+    this._autoCareBusy = false;
+    this._autoSleepActive = false;
+    this._lastAutoCareAt = {};
+    this._foodMenuCache = null;
+    this._chaseGameActive = false;
     this._edgeMoveUntil = 0;
     this._edgeMoveDy = 0;
     this._edgeMoveGraphType = null;
@@ -1255,6 +1269,9 @@ class DesktopPetApp {
             if (!s.stats) return;
             const now = performance.now();
             const st = s.stats;
+            this._petStatus = s;
+            this._like520Unlocked = !!st.like520Unlocked;
+            this._maybeAutoCare(s).catch(() => {});
             const warn = (key, msg, dur, cd = 25000) => {
               if (!this._lastStatWarningAt[key] || now - this._lastStatWarningAt[key] > cd) {
                 this.showBubble(msg, dur);
@@ -2353,6 +2370,8 @@ class DesktopPetApp {
   }
 
   _isGraphAvailable(graphType) {
+    // like520 特殊待机仅在好感度 >= 520 解锁后才可用 (对标 VPet)
+    if (graphType === 'idle_happy_like520' && !this._like520Unlocked) return false;
     if (this._manifestAnimations.size === 0) return true;
     if (this._manifestAnimations.has(graphType)) return true;
     return graphType.startsWith('move.') && this._manifestAnimations.has('move');
@@ -4183,9 +4202,195 @@ class DesktopPetApp {
 
   _wakeFromManualSleep() {
     if (!this._manualSleepMode) return false;
+    if (this._autoSleepActive) {
+      this._autoSleepActive = false;
+      invoke('pet_action_sleep', {}).catch(() => {});
+    }
     this._stopRoamingAndReturnToIdle();
     this.showBubble('起床啦!', 1500);
     return true;
+  }
+
+  // ── 低状态自动照料 (对标 VPet: 饥饿讨食 / 体力枯竭自动睡觉 / 自动投喂) ──
+  async _maybeAutoCare(status) {
+    if (this._autoCareBusy) return;
+    const st = status && status.stats;
+    if (!st) return;
+    const now = performance.now();
+
+    // 自动睡眠中: 体力恢复 / 被打断 / 被手动唤醒 → 结束自动睡眠
+    if (this._autoSleepActive) {
+      const interrupted = this._dragging || this._toolbarActive || this._auxWindowActive || !this._manualSleepMode;
+      if (st.energy > 55 || interrupted) {
+        this._autoCareBusy = true;
+        try {
+          await invoke('pet_action_sleep', {}).catch(() => {});
+          this._autoSleepActive = false;
+          this._manualSleepMode = false;
+          this._manualAnimLock = false;
+          this._returnToIdle(this.mode);
+          if (st.energy > 55 && !interrupted) this.showBubble('睡饱啦，精神多了~', 2000);
+        } finally { this._autoCareBusy = false; }
+      }
+      return;
+    }
+
+    if (!this._canAmbientAct()) return;
+    if (this._wasWorking || this._manualSleepMode || this._edgeClimbActive) return;
+
+    const cooled = (key, ms) => !this._lastAutoCareAt[key] || now - this._lastAutoCareAt[key] > ms;
+
+    // 1) 体力枯竭 → 自动睡觉
+    if (st.energy < 8 && cooled('autosleep', 90000)) {
+      this._lastAutoCareAt.autosleep = now;
+      this._autoCareBusy = true;
+      try {
+        const r = await invoke('pet_action_sleep', {}).catch(() => null);
+        const sleeping = r ? (r.sleepToggled !== false && r.isSleeping !== false) : false;
+        if (sleeping) {
+          this._autoSleepActive = true;
+          this._manualSleepMode = true;
+          this._manualAnimLock = true;
+          if (this._manualAnimTimer) { clearTimeout(this._manualAnimTimer); this._manualAnimTimer = null; }
+          await this.playAnimation('sleep', this.mode || 'normal');
+          this.showBubble('太困了，先睡一会儿... Zzz', 2600);
+        }
+      } finally { this._autoCareBusy = false; }
+      return;
+    }
+
+    // 2) 自动投喂 (设置开启 + 买得起合适的食物/饮品)
+    const autoBuy = !!(this._petSettings && this._petSettings.enable_auto_buy);
+    if (autoBuy && (st.hunger < 25 || st.thirst < 25) && cooled('autobuy', 40000)) {
+      this._lastAutoCareAt.autobuy = now;
+      this._autoCareBusy = true;
+      try {
+        const wantDrink = st.thirst <= st.hunger;
+        const food = await this._pickAutoBuyFood(wantDrink, st.money);
+        if (food) {
+          const r = await invoke('pet_action_eat', { foodName: food.name }).catch(() => null);
+          if (r && r.canAfford !== false) {
+            const graph = r.graphType || food.graph || (wantDrink ? 'drink' : 'eat');
+            this.showBubble(`肚子饿了，自己买了${food.name}~`, 2600);
+            await this.playAnimation(graph, r.mood || this.mode || 'normal',
+              () => this._returnToIdle(this.mode), { foodImage: r.foodImage, autoEndLoops: 1 });
+          }
+        }
+      } finally { this._autoCareBusy = false; }
+      return;
+    }
+
+    // 3) 饥饿讨食小动作 (未开启自动投喂时)
+    if (!autoBuy && st.hunger < 15 && cooled('beg', 30000)) {
+      this._lastAutoCareAt.beg = now;
+      const begGraph = this._pickAmbientGraph(['idle_boring', 'think', 'switch']);
+      if (begGraph && this._hasAnimationGraph(begGraph)) {
+        this.showBubble('主人…我好饿，喂喂我嘛~', 2600);
+        await this.playAnimation(begGraph, this.mode || 'normal',
+          () => this._returnToIdle(this.mode), { ambient: true, autoEndLoops: 1 });
+      }
+    }
+  }
+
+  // ── 桌面交互小游戏: 追逐鼠标 (对标 VPet 桌面物理交互) ──
+  async _startChaseGame() {
+    if (this._chaseGameActive) return;
+    if (this._dragging || this._wasWorking || this._musicActive || this._mischiefBusy) {
+      this.showBubble('现在没空玩追逐呢~', 1800);
+      return;
+    }
+    if (this._edgeClimbActive) {
+      await this._interruptEdgeClimb({ pauseMs: 300, playDefault: true }).catch(() => {});
+    }
+    this._chaseGameActive = true;
+    this._manualSleepMode = false;
+    this._manualAnimLock = false;
+    this._clearManualAnimationLock?.();
+    invoke('reset_walk_state', {}).catch(() => {});
+    this.showBubble('来追我呀~ 把鼠标移到旁边！', 2200);
+
+    const CHASE_MS = 18000;
+    const TICK_MS = 110;
+    const MAX_STEP = 16;       // 每帧最大位移
+    const CATCH_DIST = 70;     // 追到判定距离
+    const startedAt = performance.now();
+    let caught = false;
+    let lastGraph = null;
+
+    try {
+      while (performance.now() - startedAt < CHASE_MS) {
+        if (this._dragging || this._toolbarActive || this._auxWindowActive
+            || this._musicActive || this._mischiefBusy || this._wasWorking) break;
+
+        let cursor, pos;
+        try {
+          [cursor, pos] = await Promise.all([
+            invoke('get_cursor_position', {}),
+            invoke('get_window_position', {}),
+          ]);
+        } catch (_) { break; }
+        if (!cursor || !pos) break;
+
+        const vb = this._visiblePetBoundsPx(pos);
+        const petCenterX = Math.round(Number(pos.x) || 0) + vb.left + vb.width / 2;
+        const dx = Math.round(Number(cursor.x) || 0) - petCenterX;
+
+        if (Math.abs(dx) <= CATCH_DIST) { caught = true; break; }
+
+        const facingRight = dx > 0;
+        this._facingRight = facingRight;
+        const step = Math.max(-MAX_STEP, Math.min(MAX_STEP, dx));
+        await invoke('move_window_by', { dx: step, dy: 0 }).catch(() => {});
+
+        // 行走动画 (按方向)
+        const dir = facingRight ? 'right' : 'left';
+        const candidates = this._walkGraphCandidates(`move.walk.${dir}`, { facingRight });
+        if (lastGraph !== candidates[0] || this.graphType !== this._walkRunGraphType) {
+          lastGraph = candidates[0];
+          this._playAmbientGraphWithFallback(candidates, this.mode).then((g) => {
+            if (g && this._chaseGameActive) { this._walkGraphType = g; this._walkRunGraphType = g; }
+          }).catch(() => {});
+        }
+
+        await new Promise((r) => setTimeout(r, TICK_MS));
+      }
+    } finally {
+      this._chaseGameActive = false;
+      this._walkRunGraphType = null;
+      this._walkPendingGraphType = null;
+      this._walkPauseUntil = performance.now() + 1500;
+      invoke('reset_walk_state', {}).catch(() => {});
+
+      if (caught) {
+        const celebrate = this._pickAmbientGraph(['touch_head', 'switch', 'think']) || 'default';
+        this.showBubble('抓到你啦！嘿嘿~', 2400);
+        this.playAnimation(celebrate, 'happy', () => this._returnToIdle(this.mode), { autoEndLoops: 1 });
+      } else {
+        this.showBubble('追不上啦，呼呼…休息一下~', 2200);
+        this._returnToIdle(this.mode);
+      }
+    }
+  }
+
+  // 自动投喂选品: 在买得起、无副作用的食物中选最便宜且能缓解对应需求的一项
+  async _pickAutoBuyFood(preferDrink, money) {
+    try {
+      if (!this._foodMenuCache) {
+        const menu = await invoke('get_food_menu', {});
+        this._foodMenuCache = (menu && menu.items) || [];
+      }
+      const affordable = this._foodMenuCache.filter((f) =>
+        Number(f.price) <= Number(money) && Number(f.price) >= 0
+        && Number(f.health) >= 0 && Number(f.likability) >= 0);
+      const pool = affordable.filter((f) => {
+        const relief = preferDrink ? Number(f.strengthDrink) : Number(f.strengthFood);
+        return relief > 0;
+      });
+      const chosen = pool.length ? pool : affordable;
+      if (!chosen.length) return null;
+      chosen.sort((a, b) => Number(a.price) - Number(b.price));
+      return chosen[0];
+    } catch (_) { return null; }
   }
 
   async _onClickPart(lx, ly, pressDurationMs) {
@@ -4272,6 +4477,20 @@ class DesktopPetApp {
       const result = await invoke('use_inventory_item', { name });
       if (!result || result.ok === false) {
         this.showBubble(result?.message || '用不了这个物品...', 2000);
+        return;
+      }
+      // 道具/工具: 触发行为而非播放进食动画
+      if (result.isTool) {
+        if (result.showBubble) this.showBubble(result.showBubble, 2400);
+        if (result.action === 'walk') {
+          this._wasWorking = false;
+          this._manualSleepMode = false;
+          this._manualAnimLock = false;
+          this._clearManualAnimationLock?.();
+          this._walkPauseUntil = 0;
+          invoke('reset_walk_state', {}).catch(() => {});
+          invoke('force_walk', {}).catch(() => {});
+        }
         return;
       }
       this._wasWorking = false;
@@ -4588,7 +4807,7 @@ class DesktopPetApp {
   // ── 自主行走 ──
 
   async _walkTick() {
-    if (this._walkTickBusy || this._edgeTopDropActive) return;
+    if (this._walkTickBusy || this._edgeTopDropActive || this._chaseGameActive) return;
     // 设置中关闭了自主移动
     if (this._movementEnabled === false) {
       if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
@@ -4607,9 +4826,6 @@ class DesktopPetApp {
     if (this._wasWorking) {
       if (this._edgeClimbActive) {
         await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
-      } else if (this._currentWorkContext === 'monitor_coding' && this.graphType === 'default') {
-        // 工作动画被其他动画顶掉并回到 default 后, 重新回到工作姿态
-        this.playAnimation('workone', this.mode, null, { ambient: true });
       }
       return;
     }
@@ -4708,7 +4924,7 @@ class DesktopPetApp {
         screenH: Math.max(1, Math.round(bounds.workHeight)),
       });
 
-      // 位移已在 Rust 端 walk_tick 内直接应用，前端只负责动画
+      // 对标 VPet: Rust 仅计算方向/速度/动画类型, 由前端在走路 B_Loop 阶段连续移动窗口
       // 手动动画锁 / 聊天气泡显示中：跳过动画切换，但不阻断位移
       if (this._dragging || this._manualSleepMode) return;
       if (this._manualAnimLock || performance.now() < this._chatActiveUntil
@@ -4716,13 +4932,20 @@ class DesktopPetApp {
       if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;
 
       if (result.edgeHit) {
-        const nextPos = {
-          ...pos,
-          x: Math.round(Number(pos.x) || 0) + Math.round(Number(result.dx) || 0),
-          y: Math.round(Number(pos.y) || 0) + Math.round(Number(result.dy) || 0),
-        };
-        await this._startEdgeClimb(result, nextPos, screen);
-        return;
+        const climbReady = !this._edgeClimbCooldownUntil || now > this._edgeClimbCooldownUntil;
+        if (climbReady && Math.random() < EDGE_CLIMB_CHANCE) {
+          const nextPos = {
+            ...pos,
+            x: Math.round(Number(pos.x) || 0) + Math.round(Number(result.dx) || 0),
+            y: Math.round(Number(pos.y) || 0) + Math.round(Number(result.dy) || 0),
+          };
+          await this._startEdgeClimb(result, nextPos, screen);
+          return;
+        }
+        // 不爬墙: 进入冷却, 用翻转后的朝向继续行走 (Rust 已翻转方向)
+        this._edgeClimbCooldownUntil = now + EDGE_CLIMB_COOLDOWN_MS;
+        const turnDir = result.facingRight === false ? 'left' : 'right';
+        result.graphType = `move.walk.${turnDir}`;
       }
 
       const nextGraphType = this._resolveWalkGraphType(result);
@@ -4736,22 +4959,41 @@ class DesktopPetApp {
 
       if (isWalking && walkCandidates.length) {
         this._walkEndPending = false;
-        const pendingFresh = walkCandidates.includes(this._walkPendingGraphType) && performance.now() - this._walkPendingStartedAt < 900;
-        const sameRunningWalk = walkCandidates.includes(this._walkRunGraphType) || pendingFresh;
-        if (sameRunningWalk && this._walkRunGraphType && this._isWalkPlayerHealthy(this._walkRunGraphType)) return;
+        const dx = Math.round(Number(result.dx) || 0);
+        const dy = Math.round(Number(result.dy) || 0);
 
+        // 走路动画是否已就绪: 当前正在播放的就是该走路图且处于播放中
+        const walkRunning = !!this._walkRunGraphType
+          && walkCandidates.includes(this._walkRunGraphType)
+          && this.graphType === this._walkRunGraphType
+          && this.player.isPlaying;
+
+        // 对标 VPet: A_Start 起步阶段原地播放, 进入 B_Loop 循环后才连续移动窗口
+        if (walkRunning && this.player.currentPhase === 'b_loop' && (dx !== 0 || dy !== 0)) {
+          await invoke('move_window_by', { dx, dy }).catch(() => {});
+        }
+
+        // 动画已健康播放 → 本帧不重复加载 (移动已在上面处理)
+        if (walkRunning && this._isWalkPlayerHealthy(this._walkRunGraphType)) return;
+        // 走路动画加载中 (最长等待 2s) → 不重复触发, 否则会卡在 A_Start 反复重播
+        const pendingFresh = walkCandidates.includes(this._walkPendingGraphType)
+          && performance.now() - this._walkPendingStartedAt < 2000;
+        if (pendingFresh) return;
+
+        // 尚未播放走路动画 → 加载并播放 (A_Start → B_Loop)
         const preferredWalkGraph = walkCandidates[0];
         this._walkPendingGraphType = preferredWalkGraph;
         this._walkPendingStartedAt = performance.now();
         this._playAmbientGraphWithFallback(walkCandidates, this.mode)
           .then((loadedWalkGraph) => {
-            if (!loadedWalkGraph || this._walkPendingGraphType !== preferredWalkGraph) return;
+            if (this._walkPendingGraphType !== preferredWalkGraph) return;
+            if (!loadedWalkGraph) { invoke('reset_walk_state', {}).catch(() => {}); return; }
             if (this._dragging || this._manualSleepMode || this._manualAnimLock) return;
             if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;
             this._walkGraphType = loadedWalkGraph;
             this._walkRunGraphType = loadedWalkGraph;
           })
-          .catch(() => {})
+          .catch(() => { invoke('reset_walk_state', {}).catch(() => {}); })
           .finally(() => {
             if (this._walkPendingGraphType === preferredWalkGraph) this._walkPendingGraphType = null;
           });

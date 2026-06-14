@@ -50,6 +50,27 @@ pub struct LogEntry {
     pub text: String,
 }
 
+/// 邮件奖励中的物品 (物品名 -> 数量)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MailReward {
+    pub money: f64,
+    /// 物品名 -> 数量
+    pub items: Vec<(String, u32)>,
+}
+
+/// 邮件条目 — 对标 VPet 邮件/每日礼包
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MailEntry {
+    pub id: u64,
+    pub ts: u64,
+    pub title: String,
+    pub body: String,
+    pub reward: MailReward,
+    #[serde(default)]
+    pub opened: bool,
+}
+
 /// 日程表条目
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -131,6 +152,12 @@ pub struct GameExtrasData {
     pub schedule: Schedule,
     pub settings: PetSettings,
     pub log: Vec<LogEntry>,
+    /// 邮箱
+    pub mailbox: Vec<MailEntry>,
+    /// 邮件自增 id
+    pub mail_seq: u64,
+    /// 上次发放每日礼包的天数 (unix / 86400)
+    pub last_daily_mail_day: u64,
 }
 
 /// 扩展系统 — 持有数据 + 存档
@@ -177,6 +204,56 @@ impl GameExtras {
     pub fn inventory_add(&mut self, name: &str, count: u32) {
         let entry = self.data.inventory.entry(name.to_string()).or_insert(0);
         *entry += count;
+    }
+
+    /// 投递一封邮件到邮箱 (保留最近 50 封)
+    pub fn add_mail(&mut self, title: &str, body: &str, reward: MailReward) -> u64 {
+        self.data.mail_seq += 1;
+        let id = self.data.mail_seq;
+        self.data.mailbox.push(MailEntry {
+            id,
+            ts: now_unix(),
+            title: title.to_string(),
+            body: body.to_string(),
+            reward,
+            opened: false,
+        });
+        let len = self.data.mailbox.len();
+        if len > 50 {
+            self.data.mailbox.drain(0..len - 50);
+        }
+        id
+    }
+
+    /// 未读邮件数量
+    pub fn unread_mail_count(&self) -> usize {
+        self.data.mailbox.iter().filter(|m| !m.opened).count()
+    }
+
+    /// 每日礼包: 跨天时投递一封, 返回是否新投递
+    pub fn ensure_daily_mail(&mut self) -> bool {
+        let today = now_unix() / 86_400;
+        if today == 0 || self.data.last_daily_mail_day == today {
+            return false;
+        }
+        let first_time = self.data.last_daily_mail_day == 0;
+        self.data.last_daily_mail_day = today;
+        // 首次启动当天不强发, 避免一上来就堆邮件
+        if first_time {
+            return false;
+        }
+        let coins = 50.0 + (rand::random::<f64>() * 100.0).floor();
+        let gifts = ["小花束", "毛绒玩偶", "拍立得相机"];
+        let pick = gifts[(rand::random::<f64>() * gifts.len() as f64) as usize % gifts.len()];
+        self.add_mail(
+            "每日礼包",
+            "亲爱的主人每天都在惦记你哦，这是今天的小礼物~",
+            MailReward {
+                money: coins,
+                items: vec![(pick.to_string(), 1)],
+            },
+        );
+        true
     }
 
     /// 消耗一个物品, 返回是否成功

@@ -119,8 +119,8 @@
         if (!items.length) { emptyEl.style.display = 'block'; return; }
 
         // 按食物类型分组
-        const TYPE_LABELS = { meal: '正餐', snack: '零食', drink: '饮品', functional: '功能性', drug: '药品', gift: '礼物' };
-        const TYPE_ORDER = ['正餐', '零食', '饮品', '功能性', '药品', '礼物', '食物'];
+        const TYPE_LABELS = { meal: '正餐', snack: '零食', drink: '饮品', functional: '功能性', drug: '药品', gift: '礼物', tool: '道具' };
+        const TYPE_ORDER = ['正餐', '零食', '饮品', '功能性', '药品', '礼物', '道具', '食物'];
         const groups = {};
         items.forEach(it => {
           const g = TYPE_LABELS[it.type]

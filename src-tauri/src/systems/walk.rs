@@ -54,6 +54,15 @@ impl WalkSystem {
         self.idle_timer = Self::random_standing_duration();
     }
 
+    /// 立即进入行走状态 (道具/工具触发, 对标 VPet 指南针)
+    pub fn force_walk(&mut self) {
+        self.state = WalkState::Walking;
+        self.idle_phase = IdlePhase::Standing;
+        self.direction = if rand::random::<bool>() { 1.0 } else { -1.0 };
+        self.speed_px_per_sec = 80.0;
+        self.timer = Self::random_walk_duration();
+    }
+
     fn random_idle_duration() -> f64 {
         12.0 + rand::random::<f64>() * 18.0  // 12~30s (对标 VPet 15s 间隔)
     }
