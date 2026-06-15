@@ -134,9 +134,19 @@
           state: 'Idle',
           mood: 'normal',
           graphType: 'default',
-          stats: { hunger: 80, thirst: 80, happiness: 80, energy: 80, health: 100, likability: 0, level: 1, exp: 0, money: 0 },
+          stats: { hunger: 80, thirst: 80, happiness: 80, energy: 80, health: 100, likability: 0, likabilityMax: 100, likabilityTitle: '陌生', like520Unlocked: false, level: 1, levelUpNeed: 100, exp: 0, money: 200 },
           work: { isActive: false, progress: 0, name: null },
         };
+      case 'get_mailbox':
+        return { items: [], unread: 0 };
+      case 'open_mail':
+        return { ok: false, message: '浏览器环境无法领取' };
+      case 'force_walk':
+        return { walking: true };
+      case 'get_food_menu':
+        return { items: [] };
+      case 'reset_walk_state':
+        return { graphType: 'default', walking: false };
       case 'game_tick':
         return { working: false, mood: 'normal', graphType: 'default', leveledUp: false, workFinished: false };
       case 'walk_tick':
