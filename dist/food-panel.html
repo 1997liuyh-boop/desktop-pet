@@ -100,7 +100,9 @@
 
     async function init() {
       const shopMode = window.__shopMode === true;
-      titleEl.textContent = shopMode ? '🛒 商店（购买入背包）' : '选择投喂项目';
+      const filter = window.__foodFilter || null;
+      const TITLE_MAP = { gift: '🎁 选择礼物', medicine: '💊 选择药品', drink: '🥤 选择饮品', eat: '🍱 选择食物' };
+      titleEl.textContent = shopMode ? '🛒 商店（购买入背包）' : (TITLE_MAP[filter] || '选择投喂项目');
       try {
         const filter = window.__foodFilter || null;
         listEl.innerHTML = '';

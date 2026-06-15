@@ -194,6 +194,20 @@ function buildStateAnimations(stateRoot, vupDir, manifest) {
   }
 }
 
+// === MOVE 专属解析 ===
+// MOVE 下每个子目录(walk.left / walk.right.faster / climb.left / fall.left ...)
+// 是一个独立的位移动画，graphType 形如 "move.walk.left"。
+// 每个子目录内部使用 A_{Mode}/B_{Mode}/C_{Mode} 三阶段或 {Mode}/A,B,C 嵌套形式。
+function buildMoveItems(moveRoot, vupDir, manifest) {
+  for (const [moveName, moveNode] of sortedDirEntries(moveRoot)) {
+    const graphType = `move.${moveName.toLowerCase()}`;
+    const modes = parsePhasedModeTree(moveNode, vupDir);
+    if (Object.keys(modes).length > 0) {
+      manifest.animations[graphType] = modes;
+    }
+  }
+}
+
 function buildSwitchAnimations(switchRoot, vupDir, manifest) {
   for (const [switchName, switchNode] of sortedDirEntries(switchRoot)) {
     const graphType = SWITCH_TO_GRAPH[switchName] || `switch_${graphSlug(switchName)}`;
@@ -230,11 +244,16 @@ function buildIdleAnimations(idleRoot, vupDir, manifest) {
 }
 
 // === animatType 映射：子目录名模式 ===
+// 支持的命名:
+//   A / A_xxx / xxx_A   → a_start
+//   B / B_xxx / xxx_B   → b_loop
+//   C / C_xxx / xxx_C   → c_end
+//   {Mode}_A / {Mode}_C → 走路慢速等使用 PoorCondition_A 这种 mode 前缀 + phase 后缀
 function guessAnimatType(dirName) {
   const upper = dirName.toUpperCase();
-  if (upper.startsWith('A_') || upper === 'A') return 'a_start';
-  if (upper.startsWith('B_') || upper === 'B') return 'b_loop';
-  if (upper.startsWith('C_') || upper === 'C') return 'c_end';
+  if (upper.startsWith('A_') || upper === 'A' || /_A(_|$)/.test(upper)) return 'a_start';
+  if (upper.startsWith('C_') || upper === 'C' || /_C(_|$)/.test(upper)) return 'c_end';
+  if (upper.startsWith('B_') || upper === 'B' || /_B(_|$)/.test(upper)) return 'b_loop';
   if (upper === 'SINGLE' || upper.startsWith('SINGLE')) return 'single';
   // Default: treat as b_loop if it has numbers
   if (/^[0-9]/.test(dirName) || /^[A-Z]_[0-9]/.test(dirName)) return 'b_loop';
@@ -289,9 +308,9 @@ function buildManifest(vupDir) {
       continue;
     }
 
-    // Eat/Drink 特殊处理: VPet FoodAnimation 三层夹心动画
-    // 后层(back_lay)=宠物身体, 中间层=食物图(关键帧运动), 前层(front_lay)=爪子/嘴
-    if (graphDirName === 'Eat' || graphDirName === 'Drink') {
+    // Eat/Drink/Gift 特殊处理: VPet FoodAnimation 三层夹心动画
+    // 后层(back_lay)=宠物身体, 中间层=物品图(关键帧运动), 前层(front_lay)=爪子/嘴
+    if (graphDirName === 'Eat' || graphDirName === 'Drink' || graphDirName === 'Gift') {
       buildFoodAnimation(graphDirName, DIR_TO_GRAPH[graphDirName], graphDir, vupDir, manifest);
       continue;
     }
@@ -318,7 +337,7 @@ function buildManifest(vupDir) {
     }
 
     if (graphDirName === 'MOVE') {
-      manifest.animations[graphType] = {};
+      buildMoveItems(graphDir, vupDir, manifest);
       continue;
     }
 
@@ -372,15 +391,16 @@ function buildFoodAnimation(graphDirName, graphType, graphDir, vupDir, manifest)
 
     const entry = {};
 
-    // 后层 back_lay → b_loop
-    if (modeNode.dirs['back_lay']) {
-      const back = collectFramePaths(modeNode.dirs['back_lay'], vupDir);
+    // 后层: back_lay 或 back → b_loop
+    const backNode = modeNode.dirs['back_lay'] || modeNode.dirs['back'];
+    if (backNode) {
+      const back = collectFramePaths(backNode, vupDir);
       if (back.length) entry.b_loop = back;
     }
 
-    // 前层 front_lay → b_loop_front: 优先 mode 内 front_lay, 否则回退顶层 front_lay
-    let frontNode = modeNode.dirs['front_lay'];
-    if (!frontNode && graphDir.dirs['front_lay']) frontNode = graphDir.dirs['front_lay'];
+    // 前层: front_lay 或 front → b_loop_front (优先 mode 内，回退顶层)
+    const frontNode = modeNode.dirs['front_lay'] || modeNode.dirs['front']
+      || graphDir.dirs['front_lay'] || graphDir.dirs['front'];
     if (frontNode) {
       const front = collectFramePaths(frontNode, vupDir);
       if (front.length) entry.b_loop_front = front;
