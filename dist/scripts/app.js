@@ -1071,6 +1071,11 @@ class DesktopPetApp {
     this._walkPendingStartedAt = 0;
     this._walkRunGraphType = null;
     this._walkEndPending = false;
+    // 行走位移定时器 (对标 VPet MoveTimer: 独立于动画帧的窗口移动定时器)
+    this._moveTimer = null;           // setInterval 句柄
+    this._moveTimerDx = 0;           // 每次移动的 dx (像素)
+    this._moveTimerDy = 0;           // 每次移动的 dy (像素)
+    this._moveTimerInterval = 120;   // 移动间隔 ms (与 _walkTick 间隔一致, 保证速度计算正确)
     this._edgeClimbCooldownUntil = 0;
     this._like520Unlocked = false;
     this._petStatus = null;
@@ -1140,12 +1145,12 @@ class DesktopPetApp {
     this.chatUI = new ChatUI(this);
     this.settingsUI = new SettingsUI(this);
 
-    // Coding Tool 监控
+    // Coding Tool 监控 — 已关闭
     this._codingMonitorTools = [];
     this._codingMonitorAnyWorking = false;
     this._codingMonitorPrevWorking = false;
     this._codingMonitorTimer = null;
-    this._startCodingMonitor();
+    // this._startCodingMonitor();
 
     this._init();
   }
@@ -1905,7 +1910,8 @@ class DesktopPetApp {
       }, { autoEndLoops: 1 });
     }
     this.showBubble(text, 2800);
-    if (!this._isSpeechBusy()) this._ttsSpeak(text).catch(() => {});
+    // 话痨模式不播报语音
+    // if (!this._isSpeechBusy()) this._ttsSpeak(text).catch(() => {});
   }
 
   // ── 生病咳嗽调度 ──
@@ -2646,6 +2652,7 @@ class DesktopPetApp {
     this._edgeClimbMaxUntil = 0;
     this._edgeClimbTopY = 0;
     if (!options.keepTopDrop) this._edgeTopDropActive = false;
+    this._stopMoveTimer();
     this._walkRunGraphType = null;
     this._walkEndPending = false;
     this._walkPendingGraphType = null;
@@ -2946,8 +2953,34 @@ class DesktopPetApp {
 
   _isWalkPlayerHealthy(graphType) {
     if (!graphType || this.graphType !== graphType) return false;
-    if (!this.player.isPlaying || !this.player.currentImage) return false;
-    return this.player.currentPhase === 'a_start' || this.player.currentPhase === 'b_loop';
+    // 放宽判断：只要 graphType 匹配且处于合理播放阶段即认为健康
+    // 不依赖 isPlaying（帧切换间隙会短暂为 false，导致误判"不健康"而跳过移动）
+    const phase = this.player.currentPhase || '';
+    return phase === 'a_start' || phase === 'b_loop' || phase === 'b_loop_front';
+  }
+
+  // ── 行走位移定时器 (对标 VPet MoveTimer) ──
+  // VPet 中 MoveTimer 是独立定时器，按固定间隔调 MoveWindows(dx, dy)
+  // 与动画播放完全解耦：位移由 _walkTick 设置 _moveTimerDx/Dy，MoveTimer 只负责定时执行
+  _startMoveTimer() {
+    this._stopMoveTimer();
+    this._moveTimer = setInterval(() => {
+      if (this._dragging || this._manualSleepMode || this._toolbarActive || this._auxWindowActive) {
+        this._stopMoveTimer();
+        return;
+      }
+      if (this._moveTimerDx === 0 && this._moveTimerDy === 0) return;
+      invoke('move_window_by', { dx: this._moveTimerDx, dy: this._moveTimerDy }).catch(() => {
+        this._stopMoveTimer();
+      });
+    }, this._moveTimerInterval);
+  }
+
+  _stopMoveTimer() {
+    if (this._moveTimer) {
+      clearInterval(this._moveTimer);
+      this._moveTimer = null;
+    }
   }
 
   _hasPlayableFrames(graphType, mode = this.mode || 'normal') {
@@ -3135,11 +3168,11 @@ class DesktopPetApp {
       const bdayMode = this.mode;
       const bdayMsg = `今天是我的生日！🎂 谢谢主人陪着我！`;
       if (this._hasAnimationGraph('bday')) {
-        this.playAnimation('bday', bdayMode, () => {
-          this.showBubble(bdayMsg, 5000);
-          if (!this._isSpeechBusy()) this._ttsSpeak(bdayMsg).catch(() => {});
-          this._returnToBaseState(bdayMode);
-        }, { autoEndLoops: 2 });
+        // 对标 VPet HostBDay: Say(text, "bday", force:true) → A_Start → B_Loop 持续循环
+        // 先显示气泡+TTS，动画持续播放直到被交互打断
+        this.showBubble(bdayMsg, 8000);
+        if (!this._isSpeechBusy()) this._ttsSpeak(bdayMsg).catch(() => {});
+        this.playAnimation('bday', bdayMode, null, { force: true });
       } else {
         this.showBubble(bdayMsg, 5000);
       }
@@ -3489,7 +3522,8 @@ class DesktopPetApp {
     }
     if (finalSpeech) {
       this.showBubble(finalSpeech, Math.max(2800, finalSpeech.length * 90));
-      this._ttsSpeak(finalSpeech).catch(() => {});
+      // 话痨模式不播报语音
+      // this._ttsSpeak(finalSpeech).catch(() => {});
     } else if (hadThinking) {
       this._clearBubble();
     }
@@ -4814,16 +4848,19 @@ class DesktopPetApp {
       return;
     }
     if (this._dragging || this._manualSleepMode) {
+      this._stopMoveTimer();
       if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, dropFromTop: false });
       return;
     }
     if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) {
+      this._stopMoveTimer();
       if (this._edgeClimbActive) await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
       return;
     }
     // 手动动画锁/聊天期间不阻断位移，仅在拿到 walk_tick 结果后跳过动画更新
     // 工作中不移动 — 否则走路动画会覆盖工作动画
     if (this._wasWorking) {
+      this._stopMoveTimer();
       if (this._edgeClimbActive) {
         await this._interruptEdgeClimb({ pauseMs: 900, playDefault: true });
       }
@@ -4932,6 +4969,7 @@ class DesktopPetApp {
       if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;
 
       if (result.edgeHit) {
+        this._stopMoveTimer();
         const climbReady = !this._edgeClimbCooldownUntil || now > this._edgeClimbCooldownUntil;
         if (climbReady && Math.random() < EDGE_CLIMB_CHANCE) {
           const nextPos = {
@@ -4957,24 +4995,39 @@ class DesktopPetApp {
       this._facingRight = result.facingRight !== false;
       this.canvas.style.transform = '';
 
+      // ── MoveTimer: 对标 VPet 位移与动画解耦 ──
+      // VPet 核心机制: MoveTimer 在 A_Start 完成后才启动
+      // 当前实现: 先确保走路动画已加载播放, 然后才启动 MoveTimer
+      // 如果走路动画还没播上, 只缓存速度向量但不启动 MoveTimer → 避免"平移没动作"
+      if (isWalking) {
+        this._moveTimerDx = Math.round(Number(result.dx) || 0);
+        this._moveTimerDy = Math.round(Number(result.dy) || 0);
+        // 走路动画已在播放 → 启动/继续 MoveTimer
+        if (this._walkRunGraphType && this._isWalkPlayerHealthy(this._walkRunGraphType) && !this._moveTimer) {
+          this._startMoveTimer();
+        }
+      } else {
+        // 不在行走 → 停止 MoveTimer
+        this._stopMoveTimer();
+      }
+
       if (isWalking && walkCandidates.length) {
         this._walkEndPending = false;
-        const dx = Math.round(Number(result.dx) || 0);
-        const dy = Math.round(Number(result.dy) || 0);
 
-        // 走路动画是否已就绪: 当前正在播放的就是该走路图且处于播放中
-        const walkRunning = !!this._walkRunGraphType
+        // ── 对标 VPet 行走动画机制 ──
+        // MoveTimer (窗口位移) 已在上方统一管理, 此处仅负责动画播放
+        // A_Start → B_Loop 自然过渡, 无需手动干预
+
+        const speedPxPerSec = Number(result.speedPxPerSec) || 80;
+        const direction = result.facingRight !== false ? 1 : -1;
+
+        // 走路动画匹配判断
+        const walkAnimMatched = !!this._walkRunGraphType
           && walkCandidates.includes(this._walkRunGraphType)
-          && this.graphType === this._walkRunGraphType
-          && this.player.isPlaying;
+          && this.graphType === this._walkRunGraphType;
 
-        // 对标 VPet: A_Start 起步阶段原地播放, 进入 B_Loop 循环后才连续移动窗口
-        if (walkRunning && this.player.currentPhase === 'b_loop' && (dx !== 0 || dy !== 0)) {
-          await invoke('move_window_by', { dx, dy }).catch(() => {});
-        }
-
-        // 动画已健康播放 → 本帧不重复加载 (移动已在上面处理)
-        if (walkRunning && this._isWalkPlayerHealthy(this._walkRunGraphType)) return;
+        // 动画已健康播放 → 本帧不重复加载
+        if (walkAnimMatched && this._isWalkPlayerHealthy(this._walkRunGraphType)) return;
         // 走路动画加载中 (最长等待 2s) → 不重复触发, 否则会卡在 A_Start 反复重播
         const pendingFresh = walkCandidates.includes(this._walkPendingGraphType)
           && performance.now() - this._walkPendingStartedAt < 2000;
@@ -4992,6 +5045,10 @@ class DesktopPetApp {
             if (this._toolbarActive || this._auxWindowActive || this._musicActive || this._mischiefBusy) return;
             this._walkGraphType = loadedWalkGraph;
             this._walkRunGraphType = loadedWalkGraph;
+            // 走路动画加载成功 → 启动 MoveTimer (对标 VPet: A_Start 完成回调中启动 MoveTimer)
+            if (!this._moveTimer && (this._moveTimerDx !== 0 || this._moveTimerDy !== 0)) {
+              this._startMoveTimer();
+            }
           })
           .catch(() => { invoke('reset_walk_state', {}).catch(() => {}); })
           .finally(() => {
@@ -5001,6 +5058,8 @@ class DesktopPetApp {
       }
 
       if (this._walkRunGraphType && !isWalking) {
+        // 停止行走位移定时器 (对标 VPet: StopMoving → MoveTimer.Enabled = false)
+        this._stopMoveTimer();
         const endingGraph = this._walkRunGraphType;
         this._walkRunGraphType = null;
         this._walkPendingGraphType = null;

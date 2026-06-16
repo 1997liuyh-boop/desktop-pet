@@ -159,51 +159,51 @@ pub fn run() {
                 let _ = window.show();
             }
 
-            // 启动 Coding Tool 监控后台服务
-            {
-                use crate::systems::coding_tools::WatcherEvent;
-                use std::sync::mpsc;
-
-                let (tx, rx) = mpsc::channel::<WatcherEvent>();
-                let tx_arc = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
-
-                // 启动 file watcher
-                {
-                    let state = app.state::<std::sync::Arc<AppState>>();
-                    let mut monitor = state.coding_monitor.lock().unwrap();
-                    monitor.start_watcher(tx_arc);
-                }
-
-                // 后台轮询 + event 推送
-                let app_handle = app.handle().clone();
-                let state = app.state::<std::sync::Arc<AppState>>().inner().clone();
-                std::thread::spawn(move || {
-                    // 等 3 秒让应用完全就绪
-                    std::thread::sleep(std::time::Duration::from_secs(3));
-                    loop {
-                        // 处理 watcher 事件
-                        while let Ok(event) = rx.try_recv() {
-                            if let Ok(mut monitor) = state.coding_monitor.lock() {
-                                monitor.on_watcher_event(&event);
-                            }
-                        }
-                        // 完整检测
-                        let snapshot = {
-                            if let Ok(mut monitor) = state.coding_monitor.lock() {
-                                monitor.poll()
-                            } else {
-                                break;
-                            }
-                        };
-                        // 推送到前端
-                        let _ = app_handle.emit("coding-monitor-snapshot", &snapshot);
-                        if !snapshot.any_just_completed.is_empty() {
-                            let _ = app_handle.emit("coding-monitor-task-complete", &snapshot.any_just_completed);
-                        }
-                        std::thread::sleep(std::time::Duration::from_secs(5));
-                    }
-                });
-            }
+            // 启动 Coding Tool 监控后台服务 — 已关闭
+            // {
+            //     use crate::systems::coding_tools::WatcherEvent;
+            //     use std::sync::mpsc;
+            //
+            //     let (tx, rx) = mpsc::channel::<WatcherEvent>();
+            //     let tx_arc = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+            //
+            //     // 启动 file watcher
+            //     {
+            //         let state = app.state::<std::sync::Arc<AppState>>();
+            //         let mut monitor = state.coding_monitor.lock().unwrap();
+            //         monitor.start_watcher(tx_arc);
+            //     }
+            //
+            //     // 后台轮询 + event 推送
+            //     let app_handle = app.handle().clone();
+            //     let state = app.state::<std::sync::Arc<AppState>>().inner().clone();
+            //     std::thread::spawn(move || {
+            //         // 等 3 秒让应用完全就绪
+            //         std::thread::sleep(std::time::Duration::from_secs(3));
+            //         loop {
+            //             // 处理 watcher 事件
+            //             while let Ok(event) = rx.try_recv() {
+            //                 if let Ok(mut monitor) = state.coding_monitor.lock() {
+            //                     monitor.on_watcher_event(&event);
+            //                 }
+            //             }
+            //             // 完整检测
+            //             let snapshot = {
+            //                 if let Ok(mut monitor) = state.coding_monitor.lock() {
+            //                     monitor.poll()
+            //                 } else {
+            //                     break;
+            //                 }
+            //             };
+            //             // 推送到前端
+            //             let _ = app_handle.emit("coding-monitor-snapshot", &snapshot);
+            //             if !snapshot.any_just_completed.is_empty() {
+            //                 let _ = app_handle.emit("coding-monitor-task-complete", &snapshot.any_just_completed);
+            //             }
+            //             std::thread::sleep(std::time::Duration::from_secs(5));
+            //         }
+            //     });
+            // }
 
             Ok(())
         })

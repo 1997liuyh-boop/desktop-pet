@@ -100,8 +100,8 @@ class DesktopPetApp {
     await this.graphCore.preloadCommon();
     console.log('动画预加载完成');
 
-    // 初始化 Coding Tool 监控
-    this._setupCodingMonitor();
+    // 初始化 Coding Tool 监控 — 已关闭
+    // this._setupCodingMonitor();
 
     // 播放入场动画
     this.core.currentGraphType = 'startup';

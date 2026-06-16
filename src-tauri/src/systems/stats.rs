@@ -88,6 +88,7 @@ impl Default for StatsData {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
+            save_version: 0,
         };
         d.mode = mode_to_str(d.cal_mode());
         d
@@ -597,33 +598,6 @@ impl StatsData {
     pub fn mark_interaction(&mut self) {
         self.seconds_since_interaction = 0.0;
     }
-
-    /// 送礼物效果：心情大幅提升，好感度+20，健康+5（对标 VPet Gift 食物类型）
-    pub fn receive_gift(&mut self) {
-        self.feeling_change(30.0);
-        self.set_likability(self.likability + 20.0);
-        self.health = (self.health + 5.0).min(100.0);
-    }
-}
-
-/// Unix 秒 → (月, 日)，纯算术，无需 chrono
-pub fn unix_to_month_day(ts: u64) -> (u8, u8) {
-    let mut days = (ts / 86400) as u32;
-    let mut year = 1970u32;
-    loop {
-        let dy = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
-        if days < dy { break; }
-        days -= dy;
-        year += 1;
-    }
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let md = [31u32, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut month = 1u8;
-    for (i, &m) in md.iter().enumerate() {
-        if days < m { month = i as u8 + 1; break; }
-        days -= m;
-    }
-    (month, days as u8 + 1)
 }
 
 /// Stats 系统 — 持有数据 + 存档

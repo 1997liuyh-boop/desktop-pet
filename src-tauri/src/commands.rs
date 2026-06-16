@@ -1603,7 +1603,7 @@ fn pick_edge_move_graph(side: &str, speed_px_per_sec: f64) -> String {
 /// 返回窗口位移�?+ 朝向 + 动画类型
 #[tauri::command]
 pub fn walk_tick(
-    window: tauri::WebviewWindow,
+    _window: tauri::WebviewWindow,
     dt_seconds: f64,
     window_x: i32,
     _window_y: i32,
@@ -1684,15 +1684,8 @@ pub fn walk_tick(
         core.current_graph_type = "default".into();
     }
 
-    // 位移直接在 Rust 端应用 — 之前由前端再发一次 move_window_by 才移动,
-    // IPC 拥塞时动画继续循环而窗口不动, 表现为"原地跑"
-    if dx != 0 || dy != 0 {
-        if let Ok(pos) = window.outer_position() {
-            let _ = window.set_position(tauri::Position::Physical(
-                tauri::PhysicalPosition::new(pos.x + dx, pos.y + dy),
-            ));
-        }
-    }
+    // 位移由前端在 _walkTick 中统一控制 (对标 VPet: MoveTimer 独立驱动窗口移动)
+    // 不在 Rust 端直接移动窗口, 避免双重移动导致动画和位移脱节
 
     // 累计移动距离 (内存累加, 由 game_tick 周期落盘)
     if dx != 0 {
