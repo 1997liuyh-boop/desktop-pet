@@ -196,7 +196,7 @@ class PetLogic {
       if (this.stats && this.stats.energy < 20 && mood !== ModeType.HAPPY) {
         this.startSleeping();
       } else if (rand < 0.45) {
-        this.core.startWalking();
+        this._startWalkingWithPreload();
       } else if (rand < 0.65) {
         this._startMischief();
       } else {
@@ -205,19 +205,47 @@ class PetLogic {
     }
   }
 
+  // 开始行走 + 预加载行走动画帧
+  _startWalkingWithPreload() {
+    this.core.startWalking();
+    // 异步预加载所有行走动画帧（不阻塞游戏循环）
+    this._preloadWalkFrames();
+  }
+
   _updateWalk() {
     const core = this.core;
     core.walkTimer++;
-    const dx = core.targetX - core.x;
-    const dy = core.targetY - core.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < 5 || core.walkTimer > core.walkDuration) {
+
+    // 行走超时 → 回到空闲
+    if (core.walkTimer > core.walkDuration) {
       core.resetIdle();
-    } else {
-      core.x += (dx / dist) * 1.5;
-      core.y += (dy / dist) * 1.5;
-      if (dx > 0) core.direction = 1;
-      else if (dx < 0) core.direction = -1;
+      return;
+    }
+
+    // 窗口跟随模式：宠物始终在Canvas中心，窗口直接移动
+    // 实际位移由 app.js gameLoop 中的 _handleWindowMovement 基于 dt 计算
+    // 这里只负责方向和状态管理
+  }
+
+  // 行走开始时预加载行走动画帧
+  async _preloadWalkFrames() {
+    const dirs = ['left', 'right'];
+    const speeds = ['', '.faster', '.slow'];
+    for (const dir of dirs) {
+      for (const speed of speeds) {
+        const graphType = `move.walk.${dir}${speed}`;
+        await this.graphCore.getAnim(graphType, 'normal', 'a_start').catch(() => {});
+        await this.graphCore.getAnim(graphType, 'normal', 'b_loop').catch(() => {});
+        await this.graphCore.getAnim(graphType, 'normal', 'c_end').catch(() => {});
+      }
+    }
+    // 攀爬和爬行动画
+    for (const graphType of [
+      'move.climb.left', 'move.climb.right',
+      'move.crawl.left', 'move.crawl.right',
+      'move.fall.left', 'move.fall.right',
+    ]) {
+      await this.graphCore.getAnim(graphType, 'normal', 'b_loop').catch(() => {});
     }
   }
 

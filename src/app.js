@@ -301,7 +301,7 @@ class DesktopPetApp {
         // 所有 coding 工具都不在工作了 → 退出工作状态，进入闲游
         if (this.core.state === PetState.WORK && this.core.activity === 'monitor_coding') {
           this.petLogic.stopWork();
-          this.core.startWalking();
+          this.petLogic._startWalkingWithPreload();
           this.messageBar.say('工作完成啦，出去逛逛喵~');
         }
       }
@@ -464,9 +464,9 @@ class DesktopPetApp {
 
     this.renderer.draw(this.core);
 
-    // 窗口边缘行走
+    // 窗口跟随行走 — 基于 dt 计算位移，宠物始终在Canvas中心
     if (this.core.state === PetState.WALK && !this.core.isDragging) {
-      this._handleWindowMovement();
+      this._handleWindowMovement(dt);
     }
 
     if (this.chatUI && this.chatUI.isThinking) {
@@ -522,14 +522,24 @@ class DesktopPetApp {
     }
   }
 
-  _handleWindowMovement() {
+  _handleWindowMovement(dt) {
     if (!isElectron()) return;
-    const margin = 30;
     const core = this.core;
-    if (core.x < margin) { this.controller.moveWindow(-3, 0); core.x += 10; }
-    else if (core.x > core.LOGIC_W - margin) { this.controller.moveWindow(3, 0); core.x -= 10; }
-    if (core.y < margin + 100) { this.controller.moveWindow(0, -3); core.y += 10; }
-    else if (core.y > core.LOGIC_H - margin) { this.controller.moveWindow(0, 3); core.y -= 10; }
+
+    // 窗口跟随模式：基于实际 dt 计算位移，亚像素累积避免抖动
+    // 碰到屏幕边缘时反弹方向
+    const newDirection = this.controller.moveBySpeed(
+      core.direction,
+      core.walkSpeed,
+      dt
+    );
+
+    if (newDirection !== core.direction) {
+      // 碰到边缘 → 反转方向 + 更新行走动画
+      core.direction = newDirection;
+      core._updateWalkGraphType();
+      core.addEvent('碰到屏幕边缘，回头了');
+    }
   }
 
   _toggleMonitorPanel() {

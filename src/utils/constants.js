@@ -95,3 +95,12 @@ const WINDOW_CFG = {
   CANVAS_HEIGHT: 250,
   PET_RADIUS: 80,
 };
+
+// 行走速度（与 Rust walk.rs 对齐）
+const WALK_SPEED = {
+  NORMAL: 80,       // 像素/秒
+  SLOW: 55,         // 生病/虚弱
+  FAST: 125,        // 开心
+  SLOW_CHANCE: 0.20,
+  FAST_CHANCE: 0.40,
+};

@@ -55,4 +55,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppPath: () => ipcRenderer.sendSync('get-app-path'),
   readAssetFile: (relativePath) => ipcRenderer.sendSync('read-asset-file', relativePath),
   readPngFrame: (framePath) => ipcRenderer.sendSync('read-png-frame', framePath),
+  readPngFrameAsync: (framePath) => ipcRenderer.invoke('read-png-frame-async', framePath),
 });

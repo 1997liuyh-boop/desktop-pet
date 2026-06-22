@@ -66,7 +66,18 @@ class GraphCore {
     const common = [
       ['default', 'normal', 'b_loop'],
       ['default', 'normal', 'single'],
-      ['move', 'normal', 'b_loop'],
+      ['move.walk.left', 'normal', 'b_loop'],
+      ['move.walk.right', 'normal', 'b_loop'],
+      ['move.walk.left.faster', 'normal', 'b_loop'],
+      ['move.walk.right.faster', 'normal', 'b_loop'],
+      ['move.walk.left.slow', 'normal', 'b_loop'],
+      ['move.walk.right.slow', 'normal', 'b_loop'],
+      ['move.climb.left', 'normal', 'b_loop'],
+      ['move.climb.right', 'normal', 'b_loop'],
+      ['move.crawl.left', 'normal', 'b_loop'],
+      ['move.crawl.right', 'normal', 'b_loop'],
+      ['move.fall.left', 'normal', 'b_loop'],
+      ['move.fall.right', 'normal', 'b_loop'],
       ['sleep', 'normal', 'b_loop'],
       ['touch_head', 'normal', 'a_start'],
       ['touch_head', 'normal', 'b_loop'],
@@ -128,6 +139,12 @@ class GraphCore {
       ['idle', 'normal', 'a_start'],
       ['idle', 'normal', 'b_loop'],
       ['idle', 'normal', 'c_end'],
+      ['switch', 'normal', 'a_start'],
+      ['switch', 'normal', 'b_loop'],
+      ['switch', 'normal', 'c_end'],
+      ['think', 'normal', 'a_start'],
+      ['think', 'normal', 'b_loop'],
+      ['think', 'normal', 'c_end'],
     ];
     for (const [gt, mt, at] of common) {
       await this.getAnim(gt, mt, at).catch(() => {});
